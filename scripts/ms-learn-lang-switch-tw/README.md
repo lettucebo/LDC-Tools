@@ -20,15 +20,15 @@ You need [Tampermonkey](https://www.tampermonkey.net/) (or a compatible userscri
 
 ## How it works
 
-The script runs on any URL matching `https://*.microsoft.com/*/*`, then checks the current URL against the regex:
+The script runs on any URL matching `https://*.microsoft.com/*/*`, then checks `location.pathname` against the regex:
 
 ```
-/com\/(en-us|zh-tw)\//i
+/^\/(en-us|zh-tw)\//i
 ```
 
-The `i` flag makes the match case-insensitive, so mixed-case locale codes like `en-US` / `zh-TW` (used by `support.microsoft.com` KB / product articles) match too. If the URL does **not** contain an `en-us` or `zh-tw` segment (in any case), the script does nothing — no button is injected. This keeps it out of the way on pages that aren't localized with that convention.
+This is anchored to the **first path segment** and the `i` flag makes it case-insensitive, so it matches lowercase `en-us` / `zh-tw` and mixed-case `en-US` / `zh-TW` (used by `support.microsoft.com` KB / product articles), while ignoring locale-looking segments elsewhere in the path or query. If the first path segment is not an `en-us` or `zh-tw` locale, the script does nothing — no button is injected. This keeps it out of the way on pages that aren't localized with that convention.
 
-When clicked, the button rewrites that single locale segment in the URL (`en-us` ⇄ `zh-tw`) and navigates, so the rest of the path is preserved.
+When clicked, the button rewrites that single locale segment via the `URL` API (`en-us` ⇄ `zh-tw`) and navigates, preserving the rest of the path plus the query string and hash.
 
 ## Companion scripts
 

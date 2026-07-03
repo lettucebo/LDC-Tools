@@ -24,11 +24,11 @@ The button is mostly transparent (opacity `0.3`) until hovered, so it stays out 
 
 ## How it works
 
-The script parses the current URL with the regex `/com\/(en-us|zh-cn)\//i` (the `i` flag makes it case-insensitive, so mixed-case codes such as `en-US` / `zh-CN` on `support.microsoft.com` also match). If a match is found, it:
+The script parses `location.pathname` with the regex `/^\/(en-us|zh-cn)\//i` — anchored to the **first path segment** and case-insensitive, so it matches lowercase `en-us` / `zh-cn` and mixed-case `en-US` / `zh-CN` (used by `support.microsoft.com` KB articles), while ignoring locale-looking segments elsewhere in the path or query. If a match is found, it:
 
 1. Notes the current locale (`en-us` or `zh-cn`).
-2. Appends a small `<style>` and `<div id="lang-switch">` to the page.
-3. On click, rewrites the locale segment with `location.toString().replace(/com\/(en-us|zh-cn)\//i, ...)` and navigates to the new URL (the rewritten URL always uses the lowercase target locale, which every `*.microsoft.com` site accepts).
+2. Appends a small `<style>` and `<button id="lang-switch">` to the page.
+3. On click, rewrites just the locale segment via the `URL` API (`url.pathname = url.pathname.replace(/^\/(en-us|zh-cn)\//i, ...)`) and navigates. The rewrite always emits the lowercase target locale (which every `*.microsoft.com` site accepts) and preserves the query string and hash.
 
 Pages outside the `en-us` / `zh-cn` locales are ignored — no button is rendered.
 

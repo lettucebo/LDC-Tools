@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] — 2026-07-04
+
+### Changed
+- Version bumped to `0.8.5` to stay on the repo-wide **synchronized
+  version** (all userscripts share one `@version`). No functional change
+  to this script.
+
 ## [0.8.3] — 2026-07-04
 
 ### Changed
@@ -239,7 +246,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     expiry pre-detection, and handling for HTTP 429 (rate limit) and
     401 (token expired).
 
-[Unreleased]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.2...HEAD
+[Unreleased]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.8.5...HEAD
+[0.8.5]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.2...v0.8.5
 [0.8.2]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.1...ldc-batch-download-v0.8.2
 [0.8.1]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.0...ldc-batch-download-v0.8.1
 [0.8.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.7.1...ldc-batch-download-v0.8.0

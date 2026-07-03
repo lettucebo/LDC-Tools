@@ -4,6 +4,13 @@ All notable changes to this script are documented in this file. Format based on 
 
 ## [Unreleased]
 
+## [0.8.5] — 2026-07-04
+
+### Changed
+- Version bumped to `0.8.5` to stay on the repo-wide **synchronized
+  version** (all userscripts share one `@version`). No functional change
+  to this script.
+
 ## [0.8.3] — 2026-07-04
 
 ### Changed

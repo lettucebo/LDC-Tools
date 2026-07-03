@@ -2,7 +2,7 @@
 // @name         MS Learn Lang Switch (zh-CN)
 // @name:zh-TW   MS Learn 中英快速切換 — 簡體中文
 // @namespace    https://github.com/lettucebo/TampermonkeyScripts
-// @version      0.8.3
+// @version      0.8.5
 // @description  Toggle Microsoft Learn / *.microsoft.com pages between English (en-us) and Simplified Chinese (zh-cn) with a floating top-right button.
 // @description:zh-TW 在 Microsoft Learn 或任何 *.microsoft.com 頁面右上角加一個浮動按鈕，一鍵在英文 (en-us) 與簡體中文 (zh-cn) 之間切換。
 // @author       lettucebo
@@ -19,7 +19,8 @@
 
 (function () {
     'use strict';
-    const m = location.href.match(/com\/(en-us|zh-cn)\//i);
+    const localeRe = /^\/(en-us|zh-cn)\//i;
+    const m = location.pathname.match(localeRe);
     if (m) {
         const isEn = m[1].toLowerCase() === 'en-us';
         const style = document.createElement('style');
@@ -44,8 +45,9 @@
             ? 'Switch to Simplified Chinese (zh-cn)'
             : 'Switch to English (en-us)');
         btn.addEventListener('click', () => {
-            const toUrl = location.toString().replace(/com\/(en-us|zh-cn)\//i, `com/${isEn ? 'zh-cn' : 'en-us'}/`);
-            location.href = toUrl;
+            const url = new URL(location.href);
+            url.pathname = url.pathname.replace(localeRe, `/${isEn ? 'zh-cn' : 'en-us'}/`);
+            location.href = url.toString();
         });
         document.body.appendChild(btn);
     }
