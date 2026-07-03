@@ -4,7 +4,13 @@ All notable changes to this script are documented in this file. Format based on 
 
 ## [Unreleased]
 
-## [0.3.2] — 2026-07-04
+## [0.8.3] — 2026-07-04
+
+### Changed
+- Adopted repo-wide **synchronized versioning**: all userscripts in this
+  repo now share one `@version`. This release aligns the number to
+  `0.8.3` (previously on the `0.3.x` line) so it sits at or above the
+  highest existing script version. No behaviour change from this bump.
 
 ### Fixed
 - Locale detection and rewrite are now **case-insensitive**, so the

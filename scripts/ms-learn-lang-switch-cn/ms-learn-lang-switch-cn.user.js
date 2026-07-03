@@ -2,7 +2,7 @@
 // @name         MS Learn Lang Switch (zh-CN)
 // @name:zh-TW   MS Learn 中英快速切換 — 簡體中文
 // @namespace    https://github.com/lettucebo/TampermonkeyScripts
-// @version      0.3.2
+// @version      0.8.3
 // @description  Toggle Microsoft Learn / *.microsoft.com pages between English (en-us) and Simplified Chinese (zh-cn) with a floating top-right button.
 // @description:zh-TW 在 Microsoft Learn 或任何 *.microsoft.com 頁面右上角加一個浮動按鈕，一鍵在英文 (en-us) 與簡體中文 (zh-cn) 之間切換。
 // @author       lettucebo
