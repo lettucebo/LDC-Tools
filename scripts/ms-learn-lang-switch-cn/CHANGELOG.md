@@ -4,6 +4,20 @@ All notable changes to this script are documented in this file. Format based on 
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-07-04
+
+### Fixed
+- Locale detection and rewrite are now **case-insensitive**, so the
+  toggle button appears on `support.microsoft.com` pages whose URLs use
+  mixed-case locale codes — e.g. legacy KB / product articles under
+  `/en-US/`, `/zh-CN/` (`.../Forms/...`, `.../topic/...`). Previously the
+  regex matched only lowercase `en-us` / `zh-cn`, so no button was
+  injected on those pages. The rewritten URL still emits the lowercase
+  locale, which both `support.microsoft.com` and `learn.microsoft.com`
+  serve, so lowercase pages (Microsoft Learn, the newer support hubs)
+  are unaffected. No `@match` change was needed —
+  `https://*.microsoft.com/*/*` already covers the `support` subdomain.
+
 ## [0.3.1] — 2026-05-13
 
 ### Changed
