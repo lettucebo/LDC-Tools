@@ -4,6 +4,22 @@ All notable changes to this script are documented in this file. Format based on 
 
 ## [Unreleased]
 
+## [0.8.5] — 2026-07-04
+
+### Fixed
+- Locale detection/rewrite is now anchored to the **first path segment**
+  (`location.pathname` matched with `/^\/(en-us|zh-cn)\//i`) instead of a
+  substring match on the whole URL string. This prevents a false positive
+  where a locale-looking segment deeper in the path or inside the query
+  string (e.g. `.../foo/com/en-US/bar` or `?q=com/en-US/x`) could inject
+  the button and rewrite the wrong segment. The rewrite now uses the `URL`
+  API, so the query string and hash are preserved.
+
+### Added
+- `test/pure-modules.test.js` — hand-ported pure tests for the locale
+  toggle: mixed-case + lowercase inputs, query/hash preservation, and
+  anchored false-positive rejection. Run with `node`.
+
 ## [0.8.3] — 2026-07-04
 
 ### Changed

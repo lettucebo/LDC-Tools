@@ -24,11 +24,11 @@
 
 ## 運作原理
 
-腳本以正則 `/com\/(en-us|zh-cn)\//i`（`i` 旗標讓比對不分大小寫，因此 `support.microsoft.com` 上的 `en-US` / `zh-CN` 等大寫語系碼也能比對）解析目前的網址。比對成功時：
+腳本以正則 `/^\/(en-us|zh-cn)\//i` 解析 `location.pathname` —— 錨定在**第一個路徑區段**且不分大小寫，因此可比對小寫 `en-us` / `zh-cn` 與大寫 `en-US` / `zh-CN`（`support.microsoft.com` KB 文章所用），同時忽略路徑其他位置或 query 中長得像語系碼的片段。比對成功時：
 
 1. 紀錄當前語系（`en-us` 或 `zh-cn`）。
-2. 將一段 `<style>` 與一顆 `<div id="lang-switch">` 注入頁面。
-3. 點擊按鈕時，以 `location.toString().replace(/com\/(en-us|zh-cn)\//i, ...)` 改寫語系區段並導向新網址（改寫後一律使用小寫的目標語系碼，各 `*.microsoft.com` 站點皆可接受）。
+2. 將一段 `<style>` 與一顆 `<button id="lang-switch">` 注入頁面。
+3. 點擊按鈕時，透過 `URL` API 只改寫語系區段（`url.pathname = url.pathname.replace(/^\/(en-us|zh-cn)\//i, ...)`）並導向新網址。改寫後一律使用小寫的目標語系碼（各 `*.microsoft.com` 站點皆可接受），並保留 query 與 hash。
 
 若頁面不屬於 `en-us` 或 `zh-cn`，腳本不會渲染按鈕。
 

@@ -44,13 +44,14 @@ currently has** — bump up, never down. (Example: to synchronize a repo
 whose scripts were at `0.3.2`, `0.3.0` and `0.8.2`, everything moves to
 `0.8.3`, not down to the `0.3.x` line.)
 
-## Per-script tag scheme
+## Release tag scheme
 
-Releases use tags of the form `<script-id>-v<X.Y.Z>`, e.g.
-`ldc-batch-download-v0.8.3`, `ms-learn-lang-switch-tw-v0.8.3`. Because all
-scripts share one synchronized version, every script cut in the same
-release carries the **same** `<X.Y.Z>` in its tag. See
-`RELEASING.md` for the full release procedure.
+Because all scripts share one synchronized version, each release is a
+**single repo-wide tag** `v<X.Y.Z>` plus **one** GitHub Release covering
+all scripts — e.g. `v0.8.5`. Do **not** create per-script
+`<script-id>-v<X.Y.Z>` tags (that is the old scheme). Older per-script
+tags and the legacy repo-wide tags (`v0.4.0`, `v0.5.0`, `v1.0.0`) remain
+for history. See `RELEASING.md` for the full release procedure.
 
 ## Folder layout per script
 
