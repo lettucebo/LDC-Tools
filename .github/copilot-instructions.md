@@ -1,7 +1,9 @@
 # Project conventions
 
 This repository is `lettucebo/TampermonkeyScripts` — a collection of
-independent Tampermonkey userscripts. Each script lives in its own
+Tampermonkey userscripts that are independent in functionality but are
+released together under **one synchronized version number** (see
+[Versioning](#versioning) below). Each script lives in its own
 `scripts/<script-id>/` folder.
 
 ## Tampermonkey userscript conventions
@@ -27,10 +29,27 @@ When adding or modifying a userscript:
   version and a `:zh-TW` translation pair when the script has user-facing
   UI in either language.
 
+## Versioning
+
+**All userscripts in this repo share one synchronized `@version`.** Every
+release bumps **all** scripts to the same version number — including
+scripts with no functional change (give those a CHANGELOG entry noting a
+"synchronized version bump, no functional change"). This keeps releases
+and tags aligned so the entire repo can be tracked by a single version at
+any point in time.
+
+Because Tampermonkey never updates an install to a **lower** `@version`,
+the shared version must always be **≥ the highest version any script
+currently has** — bump up, never down. (Example: to synchronize a repo
+whose scripts were at `0.3.2`, `0.3.0` and `0.8.2`, everything moves to
+`0.8.3`, not down to the `0.3.x` line.)
+
 ## Per-script tag scheme
 
 Releases use tags of the form `<script-id>-v<X.Y.Z>`, e.g.
-`ldc-batch-download-v0.6.0`, `ms-learn-lang-switch-tw-v0.3.0`. See
+`ldc-batch-download-v0.8.3`, `ms-learn-lang-switch-tw-v0.8.3`. Because all
+scripts share one synchronized version, every script cut in the same
+release carries the **same** `<X.Y.Z>` in its tag. See
 `RELEASING.md` for the full release procedure.
 
 ## Folder layout per script
