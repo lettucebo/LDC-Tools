@@ -11,28 +11,23 @@ currently has**.
 
 ## Tag scheme
 
-Per-script tags use the form `<script-id>-v<X.Y.Z>`, for example:
+Because all scripts share one synchronized version, each release is a
+**single repo-wide tag** `v<X.Y.Z>` plus **one** GitHub Release that
+covers every script — for example `v0.8.5`. Do **not** create per-script
+`<script-id>-v<X.Y.Z>` tags; that was the old scheme.
 
-- `ldc-batch-download-v0.8.2`
-- `ms-learn-lang-switch-tw-v0.3.0`
-- `ms-learn-lang-switch-cn-v0.3.0`
-- `github-docs-lang-switch-cn-v0.3.0`
-
-> **Historical exceptions to the per-script tag scheme**:
+> **Tag history**:
 >
-> - `v0.4.0` and `v0.5.0` exist as legacy repo-wide tags from when
->   this repo was named `LDC-Tools` and only held the LDC Batch
->   Downloader. They map to LDC versions of those numbers.
-> - `v0.3.0` was deployed via Tampermonkey's auto-update mechanism
->   and never given an explicit Git tag — that decision still stands.
-> - `v1.0.0` is the repo-wide milestone tag for the May 2026
->   restructure that renamed `LDC-Tools` → `TampermonkeyScripts` and
->   moved each userscript under `scripts/<script-id>/`. It is a
->   one-off and is **not** an LDC release — LDC's continuous
->   versioning crossed that restructure as `0.5.0` → `0.6.0`.
->
-> Going forward, every new tag is namespaced with its `<script-id>-`
-> prefix.
+> - `v0.4.0`, `v0.5.0`, `v1.0.0` are legacy repo-wide tags (the
+>   `LDC-Tools` era and the May 2026 `TampermonkeyScripts` restructure).
+>   The new synchronized `v<X.Y.Z>` release tags continue this single
+>   repo-wide line.
+> - Older per-script tags (`ldc-batch-download-v0.8.2`,
+>   `ms-learn-lang-switch-tw-v0.3.0`, etc.) predate synchronization and
+>   remain for history, but no new per-script tags are created.
+> - Intermediate versions that are bumped in the CHANGELOG but never
+>   separately tagged (e.g. `0.8.3`, `0.8.4`) live in the CHANGELOG only —
+>   only the final synchronized version of a release cut gets the tag.
 
 ## Cutting a release
 
@@ -102,20 +97,20 @@ gh pr merge <PR#> --squash --delete-branch \
 > intermediate versions live in the CHANGELOG only and don't each
 > get their own tag.
 
-### 4. Create an annotated tag and push it
+### 4. Create the single annotated tag and push it
 
 ```bash
 git checkout main
 git pull --ff-only
-git tag -a <script-id>-vX.Y.Z -m "vX.Y.Z"
-git push origin <script-id>-vX.Y.Z
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
 ### 5. Create the GitHub Release from the tag
 
-The release title is just `vX.Y.Z` — no script-id prefix, no
-descriptive tail. The script-id is already in the tag name (which
-GitHub displays alongside), so the title doesn't need to repeat it.
+Create **one** Release for the `vX.Y.Z` tag, titled `vX.Y.Z`. Combine the
+`## [X.Y.Z]` section from every script's `CHANGELOG.md` into the notes so
+a single Release documents all scripts.
 
 Release notes come from the matching `CHANGELOG.md` section. Two
 shell-specific recipes for extracting the section:
@@ -175,6 +170,13 @@ the `.user.js` to the release is optional and only serves archival
 purposes.
 
 ## Worked examples
+
+> **Note:** the examples below use the **old per-script tag** commands
+> (`<script-id>-vX.Y.Z`). Under the current synchronized single-tag
+> scheme you instead create one `vX.Y.Z` tag and one Release for the
+> whole repo (see steps 4–5); the CHANGELOG-extraction recipes still
+> apply — just combine every script's `## [X.Y.Z]` section into the
+> single Release body.
 
 ### `ldc-batch-download` v0.6.0 (bash)
 
