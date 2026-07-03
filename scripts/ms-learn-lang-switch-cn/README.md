@@ -2,7 +2,7 @@ English | [繁體中文](./README.zh-TW.md)
 
 # MS Learn Lang Switch (zh-CN)
 
-> Scope: any page matching `https://*.microsoft.com/{en-us|zh-cn}/...` — Microsoft Learn, Docs, and the rest of the `*.microsoft.com` family.
+> Scope: any page matching `https://*.microsoft.com/{en-us|zh-cn}/...` (locale match is case-insensitive) — Microsoft Learn, Docs, Support (`support.microsoft.com`), and the rest of the `*.microsoft.com` family. Mixed-case locale codes such as `en-US` / `zh-CN` are handled too.
 
 ## What it does
 
@@ -24,11 +24,11 @@ The button is mostly transparent (opacity `0.3`) until hovered, so it stays out 
 
 ## How it works
 
-The script parses the current URL with the regex `/com\/(en-us|zh-cn)\//`. If a match is found, it:
+The script parses the current URL with the regex `/com\/(en-us|zh-cn)\//i` (the `i` flag makes it case-insensitive, so mixed-case codes such as `en-US` / `zh-CN` on `support.microsoft.com` also match). If a match is found, it:
 
 1. Notes the current locale (`en-us` or `zh-cn`).
 2. Appends a small `<style>` and `<div id="lang-switch">` to the page.
-3. On click, rewrites the locale segment with `location.toString().replace(/com\/(en-us|zh-cn)\//, ...)` and navigates to the new URL.
+3. On click, rewrites the locale segment with `location.toString().replace(/com\/(en-us|zh-cn)\//i, ...)` and navigates to the new URL (the rewritten URL always uses the lowercase target locale, which every `*.microsoft.com` site accepts).
 
 Pages outside the `en-us` / `zh-cn` locales are ignored — no button is rendered.
 

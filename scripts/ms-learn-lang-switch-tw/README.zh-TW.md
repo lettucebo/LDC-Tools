@@ -2,7 +2,7 @@
 
 # MS Learn Lang Switch (zh-TW)
 
-> 一個小巧的 Tampermonkey 使用者腳本。在 Microsoft Learn（以及任何使用 `/{locale}/` URL 慣例的 `*.microsoft.com` 頁面）右上角加上一個浮動按鈕，一鍵在英文 (`en-us`) 與繁體中文 (`zh-tw`) 之間切換。套用範圍：`https://*.microsoft.com/*/*`。
+> 一個小巧的 Tampermonkey 使用者腳本。在 Microsoft Learn（以及任何使用 `/{locale}/` URL 慣例的 `*.microsoft.com` 頁面）右上角加上一個浮動按鈕，一鍵在英文 (`en-us`) 與繁體中文 (`zh-tw`) 之間切換。套用範圍：`https://*.microsoft.com/*/*`。語系比對不分大小寫，因此 `support.microsoft.com` 上的 `en-US` / `zh-TW` 等大寫語系碼也能運作。
 
 ## 功能
 
@@ -23,10 +23,10 @@
 此腳本套用於符合 `https://*.microsoft.com/*/*` 的網址，並用以下正規表示式檢查目前的 URL：
 
 ```
-/com\/(en-us|zh-tw)\//
+/com\/(en-us|zh-tw)\//i
 ```
 
-如果 URL **沒有** `en-us` 或 `zh-tw` 區段，腳本不會做任何事，也不會插入按鈕，因此不會干擾未使用此語系慣例的頁面。
+`i` 旗標讓比對不分大小寫，因此 `support.microsoft.com` 上的 `en-US` / `zh-TW` 等大寫語系碼也能比對。如果 URL **沒有** `en-us` 或 `zh-tw` 區段（不分大小寫），腳本不會做任何事，也不會插入按鈕，因此不會干擾未使用此語系慣例的頁面。
 
 點擊按鈕時，腳本只會替換 URL 中的單一語系區段（`en-us` ⇄ `zh-tw`）並導向，其餘路徑保持不變。
 

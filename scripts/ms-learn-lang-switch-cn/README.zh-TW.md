@@ -2,7 +2,7 @@
 
 # MS Learn Lang Switch (zh-CN)
 
-> 適用範圍：任何符合 `https://*.microsoft.com/{en-us|zh-cn}/...` 的頁面 —— Microsoft Learn、Docs，以及其他 `*.microsoft.com` 系列站點。
+> 適用範圍：任何符合 `https://*.microsoft.com/{en-us|zh-cn}/...`（語系比對不分大小寫）的頁面 —— Microsoft Learn、Docs、Support（`support.microsoft.com`），以及其他 `*.microsoft.com` 系列站點。像 `en-US` / `zh-CN` 這類大寫語系碼也能處理。
 
 ## 功能說明
 
@@ -24,11 +24,11 @@
 
 ## 運作原理
 
-腳本以正則 `/com\/(en-us|zh-cn)\//` 解析目前的網址。比對成功時：
+腳本以正則 `/com\/(en-us|zh-cn)\//i`（`i` 旗標讓比對不分大小寫，因此 `support.microsoft.com` 上的 `en-US` / `zh-CN` 等大寫語系碼也能比對）解析目前的網址。比對成功時：
 
 1. 紀錄當前語系（`en-us` 或 `zh-cn`）。
 2. 將一段 `<style>` 與一顆 `<div id="lang-switch">` 注入頁面。
-3. 點擊按鈕時，以 `location.toString().replace(/com\/(en-us|zh-cn)\//, ...)` 改寫語系區段並導向新網址。
+3. 點擊按鈕時，以 `location.toString().replace(/com\/(en-us|zh-cn)\//i, ...)` 改寫語系區段並導向新網址（改寫後一律使用小寫的目標語系碼，各 `*.microsoft.com` 站點皆可接受）。
 
 若頁面不屬於 `en-us` 或 `zh-cn`，腳本不會渲染按鈕。
 

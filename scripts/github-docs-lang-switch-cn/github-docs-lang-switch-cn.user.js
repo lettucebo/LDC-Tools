@@ -2,7 +2,7 @@
 // @name         GitHub Docs Lang Switch (zh-CN)
 // @name:zh-TW   GitHub Docs 中英快速切換 — 簡體中文
 // @namespace    https://github.com/lettucebo/TampermonkeyScripts
-// @version      0.3.0
+// @version      0.8.3
 // @description  Toggle docs.github.com pages between English (en) and Simplified Chinese (zh) with a floating top-right button.
 // @description:zh-TW 在 docs.github.com 頁面右上角加一個浮動按鈕，一鍵在英文 (en) 與簡體中文 (zh) 之間切換。
 // @author       lettucebo

@@ -4,6 +4,41 @@ All notable changes to this script are documented in this file. Format based on 
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-07-04
+
+### Changed
+- Adopted repo-wide **synchronized versioning**: all userscripts in this
+  repo now share one `@version`. This release aligns the number to
+  `0.8.3` (previously on the `0.3.x` line) so it sits at or above the
+  highest existing script version. No behaviour change from this bump.
+
+### Fixed
+- Locale detection and rewrite are now **case-insensitive**, so the
+  toggle button appears on `support.microsoft.com` pages whose URLs use
+  mixed-case locale codes — e.g. legacy KB / product articles under
+  `/en-US/`, `/zh-TW/` (`.../Forms/...`, `.../topic/...`). Previously the
+  regex matched only lowercase `en-us` / `zh-tw`, so no button was
+  injected on those pages. The rewritten URL still emits the lowercase
+  locale, which both `support.microsoft.com` and `learn.microsoft.com`
+  serve, so lowercase pages (Microsoft Learn, the newer support hubs)
+  are unaffected. No `@match` change was needed —
+  `https://*.microsoft.com/*/*` already covers the `support` subdomain.
+
+## [0.3.1] — 2026-05-13
+
+### Changed
+- **Accessibility**: the toggle button is now a real `<button>`
+  element (previously a `<div>` with an `onclick` handler), so it's
+  reachable via **Tab** and activated with **Enter/Space**. Added an
+  `aria-label` that announces the direction of the switch (e.g.
+  "Switch to Traditional Chinese (zh-tw)"). The button also gains a
+  visible white `:focus` outline so keyboard users can see where
+  they are. Mouse / hover behaviour is unchanged.
+- **Metadata**: `@run-at` is now explicitly `document-end` (this
+  pins the script's existing behaviour — the IIFE already relies on
+  `document.body` being available — and prevents accidental drift if
+  a future change introduces head-time work).
+
 ## [0.3.0] — 2026-05-12
 
 ### Added

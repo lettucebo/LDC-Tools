@@ -2,7 +2,7 @@ English | [繁體中文](./README.zh-TW.md)
 
 # MS Learn Lang Switch (zh-TW)
 
-> A tiny Tampermonkey userscript that adds a floating top-right button to toggle Microsoft Learn (and any `*.microsoft.com` page using the `/{locale}/` URL convention) between English (`en-us`) and Traditional Chinese (`zh-tw`). Scope: `https://*.microsoft.com/*/*`.
+> A tiny Tampermonkey userscript that adds a floating top-right button to toggle Microsoft Learn (and any `*.microsoft.com` page using the `/{locale}/` URL convention) between English (`en-us`) and Traditional Chinese (`zh-tw`). Scope: `https://*.microsoft.com/*/*`. Locale matching is case-insensitive, so mixed-case codes like `en-US` / `zh-TW` (used by `support.microsoft.com` KB / product articles) work too.
 
 ## What it does
 
@@ -23,10 +23,10 @@ You need [Tampermonkey](https://www.tampermonkey.net/) (or a compatible userscri
 The script runs on any URL matching `https://*.microsoft.com/*/*`, then checks the current URL against the regex:
 
 ```
-/com\/(en-us|zh-tw)\//
+/com\/(en-us|zh-tw)\//i
 ```
 
-If the URL does **not** contain an `en-us` or `zh-tw` segment, the script does nothing — no button is injected. This keeps it out of the way on pages that aren't localized with that convention.
+The `i` flag makes the match case-insensitive, so mixed-case locale codes like `en-US` / `zh-TW` (used by `support.microsoft.com` KB / product articles) match too. If the URL does **not** contain an `en-us` or `zh-tw` segment (in any case), the script does nothing — no button is injected. This keeps it out of the way on pages that aren't localized with that convention.
 
 When clicked, the button rewrites that single locale segment in the URL (`en-us` ⇄ `zh-tw`) and navigates, so the rest of the path is preserved.
 

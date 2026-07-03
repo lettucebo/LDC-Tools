@@ -1,9 +1,13 @@
 # Releasing
 
-This repo is a collection of independent Tampermonkey userscripts under
-`scripts/<script-id>/`. Each script versions independently using
-[SemVer](https://semver.org/), aligned with its userscript header's
-`@version` and its own `CHANGELOG.md`.
+This repo is a collection of Tampermonkey userscripts under
+`scripts/<script-id>/`. The scripts are independent in functionality but
+share **one synchronized version number** using
+[SemVer](https://semver.org/): every release bumps **all** scripts to the
+same `@version` (even untouched ones), each aligned with its own
+`CHANGELOG.md`. Because Tampermonkey never downgrades an install, the
+shared version must always be **≥ the highest version any script
+currently has**.
 
 ## Tag scheme
 
@@ -36,17 +40,21 @@ Per-script tags use the form `<script-id>-v<X.Y.Z>`, for example:
 > review → squash-merge → tag → release. Direct-to-`main` commits
 > are tolerated for trivial doc fixes only.
 
-### 1. Bump the script's `@version`
+### 1. Bump **every** script's `@version` to the new shared version
 
-In `scripts/<script-id>/<script-id>.user.js`, edit the
-`// @version  X.Y.Z` line. Tampermonkey auto-update needs this to
+Edit the `// @version  X.Y.Z` line in **every**
+`scripts/<script-id>/<script-id>.user.js` so all scripts carry the same
+new version (see the synchronized-versioning rule above) — including
+scripts with no functional change. Tampermonkey auto-update needs this to
 trigger a fresh download for existing installs.
 
 ### 2. Update the script's CHANGELOG (and README if applicable)
 
-In `scripts/<script-id>/CHANGELOG.md`, move anything from
-`## [Unreleased]` into a new `## [X.Y.Z] — YYYY-MM-DD` section, and
-update the compare-URL footnotes at the bottom of the file.
+In **every** `scripts/<script-id>/CHANGELOG.md`, move anything from
+`## [Unreleased]` into a new `## [X.Y.Z] — YYYY-MM-DD` section (for a
+script with no functional change, add an entry noting a synchronized
+version bump), and update any compare-URL footnotes at the bottom of the
+file.
 
 If the change is user-facing (new toolbar button, new visible UI,
 new keyboard shortcut, etc.), also update
