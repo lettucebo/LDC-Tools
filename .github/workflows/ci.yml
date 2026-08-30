@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-test:
+    name: Validate and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          # Full history/tags so tools/validate.mjs can compare against tags
+          # and the origin/main baseline.
+          fetch-depth: 0
+
+      - name: Fetch origin/main
+        shell: bash
+        # actions/checkout only guarantees the checked-out ref's history
+        # (e.g. the PR merge commit), not that refs/remotes/origin/main
+        # exists locally. Fetch it explicitly so tools/validate.mjs's
+        # origin/main baseline comparison always has a ref to resolve.
+        run: git fetch origin main:refs/remotes/origin/main
+
+      - name: Setup Node.js (current LTS)
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Validate repo (metadata, changelog, synchronized version)
+        shell: bash
+        run: node tools/validate.mjs
+
+      - name: Run userscript tests
+        shell: bash
+        run: node tools/run-tests.mjs

@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Release tag to dry-run validate (strict vX.Y.Z). This does not
+          need to exist as a real git tag - workflow_dispatch never creates,
+          deletes, or pushes anything.
+        required: true
+        default: 'v0.0.0'
+
+permissions:
+  contents: write
+
+concurrency:
+  # One release run per ref at a time, so two pushes of the same tag (or two
+  # manual dry runs) can never race to publish the same release twice.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Validate, test, and release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          # Full history/tags so tools/validate.mjs can find the previous
+          # release baseline tag and tools/release-notes.mjs can read every
+          # script's CHANGELOG.md history.
+          fetch-depth: 0
+          # A real tag push already targets the tag commit. A manual
+          # workflow_dispatch dry run has no tag to check out, so it
+          # validates the supplied tag string against the tip of main.
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+
+      - name: Determine and validate release tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.release_tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          if ! [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Release tag '$TAG' does not match the strict vX.Y.Z format." >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Resolved release tag: $TAG (version $VERSION)"
+
+      - name: Fetch origin/main
+        shell: bash
+        # Explicit fetch so refs/remotes/origin/main always exists locally,
+        # independent of which ref was checked out above.
+        run: git fetch origin main:refs/remotes/origin/main
+
+      - name: Verify tag commit matches origin/main tip (tag push only)
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD_COMMIT="$(git rev-parse HEAD^{commit})"
+          MAIN_COMMIT="$(git rev-parse refs/remotes/origin/main)"
+          if [ "$HEAD_COMMIT" != "$MAIN_COMMIT" ]; then
+            echo "::error::Tag $TAG resolves to commit $HEAD_COMMIT, but origin/main tip is $MAIN_COMMIT. Refusing to release a tag that is not on main." >&2
+            exit 1
+          fi
+          echo "Tag $TAG commit $HEAD_COMMIT matches origin/main tip."
+
+      - name: Setup Node.js (current LTS)
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Run release-mode validation
+        shell: bash
+        run: node tools/validate.mjs --release-tag "$TAG"
+
+      - name: Run userscript tests
+        shell: bash
+        run: node tools/run-tests.mjs
+
+      - name: Generate release notes
+        shell: bash
+        run: node tools/release-notes.mjs "$VERSION" > release-notes.md
+
+      - name: Create GitHub release (tag push only)
+        if: github.event_name == 'push'
+        shell: bash
+        run: gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --latest --verify-tag
+
+      - name: Dry run summary (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Dry run for $TAG completed successfully"
+            echo
+            echo "No release was created (workflow_dispatch never creates, deletes, or pushes anything)."
+            echo
+            echo "<details><summary>Generated release notes</summary>"
+            echo
+            cat release-notes.md
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
