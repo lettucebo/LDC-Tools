@@ -365,7 +365,13 @@ gh run list --workflow release.yml --event push \
   --json databaseId,headBranch,headSha,status,conclusion \
   --jq ".[] | select(.headBranch == \"$TAG\" and .headSha == \"$TAG_COMMIT\")"
 gh run watch <run-id>
-gh release view "$TAG" --json tagName,isLatest,isDraft,targetCommitish,body
+# `gh release view --json` has no `isLatest` field (GraphQL-only, and
+# rejected outright as an unsupported field); verify existence/shape via
+# supported fields, then confirm "Latest" separately through the REST
+# `/releases/latest` endpoint.
+gh release view "$TAG" --json tagName,isDraft,targetCommitish,body
+LATEST_TAG="$(gh api "repos/{owner}/{repo}/releases/latest" --jq '.tag_name')"
+[ "$LATEST_TAG" = "$TAG" ] || { echo "ERROR: repos/{owner}/{repo}/releases/latest reports '$LATEST_TAG', not $TAG" >&2; exit 1; }
 ```
 
 ```powershell
@@ -378,13 +384,18 @@ gh run list --workflow release.yml --event push `
   --json databaseId,headBranch,headSha,status,conclusion `
   --jq ".[] | select(.headBranch == `"$tag`" and .headSha == `"$tagCommit`")"
 gh run watch <run-id>
-gh release view $tag --json tagName,isLatest,isDraft,targetCommitish,body
+gh release view $tag --json tagName,isDraft,targetCommitish,body
+$latestTag = gh api "repos/{owner}/{repo}/releases/latest" --jq '.tag_name'
+if ($LASTEXITCODE -ne 0) { throw "could not query repos/{owner}/{repo}/releases/latest" }
+if ($latestTag.Trim() -ne $tag) { throw "repos/{owner}/{repo}/releases/latest reports '$($latestTag.Trim())', not $tag" }
 ```
 
-Confirm: the matching run concluded `success`; the release exists, is
-titled `vX.Y.Z` and marked latest; its commit equals the peeled tag
-commit equals `origin/main`'s tip; the notes contain both the root
-`CHANGELOG.md` section and every script's section (i.e. came from
+Confirm: the matching run concluded `success`; the release exists and is
+titled `vX.Y.Z`; `repos/{owner}/{repo}/releases/latest` reports `.tag_name`
+equal to `$TAG` (confirming it is marked Latest — `gh release view --json`
+cannot report this field); its commit equals the peeled tag commit equals
+`origin/main`'s tip; the notes contain both the root `CHANGELOG.md`
+section and every script's section (i.e. came from
 `tools/release-notes.mjs`, not hand-written).
 
 ## Recovery — tag pushed but release workflow failed

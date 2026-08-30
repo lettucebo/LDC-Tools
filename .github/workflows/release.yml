@@ -283,4 +283,24 @@ jobs:
           fi
 
           echo "Post-publish verification passed: tag $TAG and main both remain at $head_commit."
-          gh release view "$TAG" --json tagName,isLatest,isDraft,isPrerelease
+
+          # `gh release view --json` has no `isLatest` field (that name is
+          # GraphQL-only and is rejected as an unsupported field by the CLI),
+          # so confirm the release exists via fields it does support, then
+          # separately verify "Latest" through the REST `/releases/latest`
+          # endpoint - the only supported way to confirm this tag is the
+          # repo's current Latest release. Any API failure or a mismatched
+          # tag fails the run closed.
+          gh release view "$TAG" --json tagName,isDraft,isPrerelease
+
+          if ! latest_json="$(gh api "repos/$GH_REPO/releases/latest" 2>&1)"; then
+            echo "::error::Could not query repos/$GH_REPO/releases/latest to confirm $TAG is marked Latest: $latest_json" >&2
+            exit 1
+          fi
+          latest_tag="$(printf '%s' "$latest_json" | jq -r '.tag_name')"
+          if [ "$latest_tag" != "$TAG" ]; then
+            echo "::error::repos/$GH_REPO/releases/latest reports '$latest_tag' as Latest, not $TAG." >&2
+            exit 1
+          fi
+
+          echo "Confirmed: $TAG is marked Latest via repos/$GH_REPO/releases/latest."
