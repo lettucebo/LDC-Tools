@@ -385,6 +385,7 @@ gh run list --workflow release.yml --event push `
   --jq ".[] | select(.headBranch == `"$tag`" and .headSha == `"$tagCommit`")"
 gh run watch <run-id>
 gh release view $tag --json tagName,isDraft,targetCommitish,body
+if ($LASTEXITCODE -ne 0) { throw "could not read release $tag; cannot confirm it exists" }
 $latestTag = gh api "repos/{owner}/{repo}/releases/latest" --jq '.tag_name'
 if ($LASTEXITCODE -ne 0) { throw "could not query repos/{owner}/{repo}/releases/latest" }
 if ($latestTag.Trim() -ne $tag) { throw "repos/{owner}/{repo}/releases/latest reports '$($latestTag.Trim())', not $tag" }

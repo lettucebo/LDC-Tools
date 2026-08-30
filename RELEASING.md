@@ -424,6 +424,23 @@ LATEST_TAG="$(gh api "repos/{owner}/{repo}/releases/latest" --jq '.tag_name')"
 [ "$LATEST_TAG" = "$TAG" ] || { echo "ERROR: repos/{owner}/{repo}/releases/latest reports '$LATEST_TAG', not $TAG" >&2; exit 1; }
 ```
 
+```powershell
+$ErrorActionPreference = 'Stop'
+$tag = 'vX.Y.Z'
+$tagCommit = git rev-parse --verify "$tag^{commit}"
+if ($LASTEXITCODE -ne 0 -or -not $tagCommit) { throw "could not resolve $tag" }
+$tagCommit = $tagCommit.Trim()
+gh run list --workflow release.yml --event push `
+  --json databaseId,headBranch,headSha,status,conclusion `
+  --jq ".[] | select(.headBranch == `"$tag`" and .headSha == `"$tagCommit`")"
+gh run watch <run-id>
+gh release view $tag --json tagName,isDraft,targetCommitish,body
+if ($LASTEXITCODE -ne 0) { throw "could not read release $tag; cannot confirm it exists" }
+$latestTag = gh api "repos/{owner}/{repo}/releases/latest" --jq '.tag_name'
+if ($LASTEXITCODE -ne 0) { throw "could not query repos/{owner}/{repo}/releases/latest" }
+if ($latestTag.Trim() -ne $tag) { throw "repos/{owner}/{repo}/releases/latest reports '$($latestTag.Trim())', not $tag" }
+```
+
 Confirm the matching run concluded `success`, the release is titled
 `vX.Y.Z`, `repos/{owner}/{repo}/releases/latest` reports `.tag_name` equal
 to `$TAG` (confirming it is marked Latest — `gh release view --json`
