@@ -2,7 +2,7 @@
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
 // @namespace    https://github.com/lettucebo/TampermonkeyScripts
-// @version      0.8.5
+// @version      0.9.0
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
@@ -41,7 +41,7 @@
     const RETRY_DELAYS_MS = [1000, 3000, 9000];
     const TOKEN_REFRESH_MARGIN_SEC = 60;
     const TOKEN_REFRESH_TIMEOUT_MS = 30000;
-    const SCRIPT_VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '0.8.2';
+    const SCRIPT_VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '0.9.0';
     const SCRIPT_AUTHOR = 'Money Yu';
     const HISTORY_MAX_ENTRIES = 3000;
     const LAST_DOWNLOAD_AT_KEY = 'ldc.lastDownloadAt';
