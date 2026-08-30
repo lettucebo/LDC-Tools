@@ -283,4 +283,14 @@ jobs:
           fi
 
           echo "Post-publish verification passed: tag $TAG and main both remain at $head_commit."
-          gh release view "$TAG" --json tagName,isLatest,isDraft,isPrerelease
+
+      - name: Verify the published release shape and Latest marker
+        shell: bash
+        # Delegated to the repo's single centralized verifier
+        # (tools/verify-release.mjs -> tools/lib/verifyReleaseCore.mjs), whose
+        # exact gh argv is pinned by tools/test/verifyReleaseCore.test.mjs.
+        # It confirms the release exists for this exact tag, is neither a
+        # draft nor a prerelease, and is the repository's current Latest
+        # release; every API error, unparseable payload or mismatch exits
+        # non-zero, so the run fails closed. Node is already set up above.
+        run: node tools/verify-release.mjs --tag "$TAG"

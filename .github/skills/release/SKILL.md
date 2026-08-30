@@ -43,8 +43,8 @@ not silently refuse the whole task.
 3. **Never delete a legacy release/tag before the replacement release
    is verified.** If a release is being retired/replaced, the new
    release must exist and be confirmed successful (Release workflow run
-   green for that exact tag, `gh release view` shows it) *before* the
-   old one is deleted.
+   green for that exact tag, `node tools/verify-release.mjs --tag
+   <new-tag>` exits 0) *before* the old one is deleted.
 4. **Never hand-write release notes when
    `node tools/release-notes.mjs <version>` exists.** It deterministically
    concatenates the root `CHANGELOG.md` and every script's
@@ -350,7 +350,10 @@ re-implement it by hand:
   `--latest --verify-tag`; then re-verifies remote identity and, if it
   changed mid-publication, deletes the release it just created
   (`gh release delete --yes`) and fails — reporting loudly if that
-  rollback itself fails.
+  rollback itself fails; finally runs
+  `node tools/verify-release.mjs --tag vX.Y.Z` to confirm the published
+  release's shape and "Latest" marker through the one centralized,
+  argv-tested implementation.
 
 ## Step 7 — Verify the release workflow succeeded
 
@@ -365,7 +368,10 @@ gh run list --workflow release.yml --event push \
   --json databaseId,headBranch,headSha,status,conclusion \
   --jq ".[] | select(.headBranch == \"$TAG\" and .headSha == \"$TAG_COMMIT\")"
 gh run watch <run-id>
-gh release view "$TAG" --json tagName,isLatest,isDraft,targetCommitish,body
+# One centralized, tested verifier for release shape + "Latest" (gh release
+# view --json cannot report Latest at all; the tool reads the supported
+# fields and confirms Latest through the REST releases/latest endpoint).
+node tools/verify-release.mjs --tag "$TAG"
 ```
 
 ```powershell
@@ -378,14 +384,17 @@ gh run list --workflow release.yml --event push `
   --json databaseId,headBranch,headSha,status,conclusion `
   --jq ".[] | select(.headBranch == `"$tag`" and .headSha == `"$tagCommit`")"
 gh run watch <run-id>
-gh release view $tag --json tagName,isLatest,isDraft,targetCommitish,body
+node tools/verify-release.mjs --tag $tag
+if ($LASTEXITCODE -ne 0) { throw "post-publication verification failed for $tag" }
 ```
 
-Confirm: the matching run concluded `success`; the release exists, is
-titled `vX.Y.Z` and marked latest; its commit equals the peeled tag
-commit equals `origin/main`'s tip; the notes contain both the root
-`CHANGELOG.md` section and every script's section (i.e. came from
-`tools/release-notes.mjs`, not hand-written).
+Confirm: the matching run concluded `success`;
+`node tools/verify-release.mjs --tag vX.Y.Z` exits 0 (the release exists for
+that exact tag, is neither a draft nor a prerelease, and
+`repos/{owner}/{repo}/releases/latest` reports it as Latest); its commit
+equals the peeled tag commit equals `origin/main`'s tip; the notes contain
+both the root `CHANGELOG.md` section and every script's section (i.e. came
+from `tools/release-notes.mjs`, not hand-written).
 
 ## Recovery — tag pushed but release workflow failed
 

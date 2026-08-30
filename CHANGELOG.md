@@ -45,6 +45,20 @@ Each userscript's own user-facing changes are documented in its own
   the remote annotated tag and `main` immediately before and after
   creating the release, rolling the release back if that identity
   changes mid-publication.
+- **Deterministic post-publication release verification**
+  (`node tools/verify-release.mjs --tag vX.Y.Z`, backed by
+  `tools/lib/verifyReleaseCore.mjs`): one centralized, injectable-runner
+  implementation that confirms the published release exists for that
+  exact tag, is neither a draft nor a prerelease, and is the
+  repository's current "Latest" release via the REST
+  `repos/{owner}/{repo}/releases/latest` endpoint (`gh release view
+  --json` has no `isLatest` field and rejects it). Its exact `gh`
+  argument vectors are pinned by unit tests, and the Release workflow,
+  the release skill and `RELEASING.md` all call this one tool — after
+  the publish job's identity-drift rollback gate — instead of
+  duplicating ad-hoc `gh` snippets. The CLI accepts only its documented
+  argument shape, inherits ambient `gh` authentication, never logs
+  credentials, and fails closed on any error or mismatch.
 - Updated release process documentation and a new release skill
   (`.github/skills/release/`) describing the synchronized-version,
   single-repo-wide-tag release procedure end to end, including recovery

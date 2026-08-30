@@ -96,8 +96,23 @@ This repo has deterministic, dependency-free Node.js tooling in
   `## [X.Y.Z]` section (repo-level changes) followed by every script's
   `## [X.Y.Z]` section, in place of manually copy-pasting changelog
   text.
+- **`node tools/verify-release.mjs --tag vX.Y.Z`** — the single place
+  that verifies an *already published* release: it exists for that exact
+  tag, is neither a draft nor a prerelease, and is the repository's
+  current "Latest" release. `gh release view --json` cannot report the
+  "Latest" marker at all (the field exists only in GraphQL and the CLI
+  rejects it outright, failing the whole call), so the tool reads only
+  supported fields and confirms "Latest" through the REST
+  `repos/{owner}/{repo}/releases/latest` endpoint. It accepts only
+  `--tag vX.Y.Z`, inherits ambient `gh` authentication/repository
+  context, never logs credentials, and fails closed on any API error,
+  unparseable payload or mismatch. Both the Release workflow and the
+  manual verification steps below call it instead of re-implementing
+  those queries.
 
-Run all three locally before opening a release PR:
+Run the three pre-release commands locally before opening a release PR
+(`verify-release.mjs` is a post-publication check and only applies once a
+release exists):
 
 ```bash
 node tools/validate.mjs
@@ -153,7 +168,9 @@ node tools\run-tests.mjs
     `gh release create ... --latest --verify-tag` it verifies remote
     identity once more and, if anything changed mid-publication, deletes
     the release it just created and fails, reporting loudly if that
-    rollback itself fails.
+    rollback itself fails. Once that gate passes it runs
+    `node tools/verify-release.mjs --tag vX.Y.Z`, which confirms the
+    published release's shape and "Latest" marker.
 
 Any failing step aborts before a Release is created (fail-closed).
 
@@ -415,13 +432,32 @@ gh run list --workflow release.yml --event push \
   --json databaseId,headBranch,headSha,status,conclusion \
   --jq ".[] | select(.headBranch == \"$TAG\" and .headSha == \"$TAG_COMMIT\")"
 gh run watch <run-id>
-gh release view "$TAG" --json tagName,isLatest,isDraft,targetCommitish,body
+# One centralized, tested verifier for release shape + "Latest" (gh release
+# view --json cannot report Latest at all; the tool reads the supported
+# fields and confirms Latest through the REST releases/latest endpoint).
+node tools/verify-release.mjs --tag "$TAG"
 ```
 
-Confirm the matching run concluded `success`, the release is titled
-`vX.Y.Z` and marked Latest, its target commit matches the peeled tag
-commit and `origin/main`'s tip, and the notes contain both the root
-`CHANGELOG.md` section and every script's section.
+```powershell
+$ErrorActionPreference = 'Stop'
+$tag = 'vX.Y.Z'
+$tagCommit = git rev-parse --verify "$tag^{commit}"
+if ($LASTEXITCODE -ne 0 -or -not $tagCommit) { throw "could not resolve $tag" }
+$tagCommit = $tagCommit.Trim()
+gh run list --workflow release.yml --event push `
+  --json databaseId,headBranch,headSha,status,conclusion `
+  --jq ".[] | select(.headBranch == `"$tag`" and .headSha == `"$tagCommit`")"
+gh run watch <run-id>
+node tools/verify-release.mjs --tag $tag
+if ($LASTEXITCODE -ne 0) { throw "post-publication verification failed for $tag" }
+```
+
+Confirm the matching run concluded `success`,
+`node tools/verify-release.mjs --tag vX.Y.Z` exits 0 (the release exists for
+that exact tag, is neither a draft nor a prerelease, and
+`repos/{owner}/{repo}/releases/latest` reports it as Latest), its target
+commit matches the peeled tag commit and `origin/main`'s tip, and the notes
+contain both the root `CHANGELOG.md` section and every script's section.
 
 ### 7. No release assets needed
 
@@ -505,7 +541,8 @@ serves).
 
 Only retire a release/tag **after its replacement release has been
 confirmed successful** (Release workflow run green for that exact tag,
-`gh release view` shows it) — never delete the old one first as a
+`node tools/verify-release.mjs --tag <new-tag>` exits 0) — never delete
+the old one first as a
 "cleanup" step before the new one is verified. Delete the release, then
 the remote tag, then the local tag, in that exact order, **verifying
 each destructive step before starting the next** (deleting the tag first,
