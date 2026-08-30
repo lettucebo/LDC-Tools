@@ -1,6 +1,6 @@
 ---
 name: release
-description: 'Use when the user asks to release, publish, cut a release, ship a release, or bump the version of any userscript in this repo — triggers include "release", "cut a release", "publish", "publish a new version", "ship it", and "bump version".'
+description: 'Use when the user asks to release, publish, cut a release, ship a release, or bump the version of any userscript in this repo — triggers include "release", "cut a release", "publish", "publish a new version", "ship it", "bump version", "發布", and "建立 release".'
 license: MIT
 allowed-tools: Bash
 ---
@@ -51,9 +51,13 @@ not silently refuse the whole task.
    `v1.0.0` tag, and plain `git fetch --tags` does not overwrite an
    existing same-name tag. If `v1.0.0` were recreated pointing at a
    different commit, the same tag name would silently mean different
-   things to different people. `tools/validate.mjs` hard-codes this in
-   `RETIRED_TAGS` and will fail closed if `--release-tag v1.0.0` is
-   ever passed. Future 1.x releases must use `1.0.1`, `1.1.0`, `2.0.0`,
+   things to different people. `tools/validate.mjs` enforces this two
+   ways: it hard-excludes `v1.0.0` from release-baseline *candidate*
+   selection, **and** it rejects `--release-tag v1.0.0` outright with a
+   `FAIL [release] ... permanently retired` error before any other
+   release-mode check runs — so this fails closed even if the scripts
+   being released have themselves been (incorrectly) bumped to
+   `1.0.0`. Future 1.x releases must use `1.0.1`, `1.1.0`, `2.0.0`,
    etc. — never `1.0.0` again.
 6. **Once a version's script content is public on `main`, it is
    frozen.** If a bug is found in an already-released version's
@@ -150,6 +154,13 @@ gh api repos/{owner}/{repo}/commits/$(gh pr view <PR#> --json headRefOid -q .hea
   --jq '.check_runs[] | {name, status, conclusion, head_sha}'
 ```
 
+```powershell
+gh pr checks <PR#> --required
+$headSha = gh pr view <PR#> --json headRefOid -q .headRefOid
+gh api "repos/{owner}/{repo}/commits/$headSha/check-runs" `
+  --jq '.check_runs[] | {name, status, conclusion, head_sha}'
+```
+
 Verify the `CI` workflow's `Validate and test` job is `completed` /
 `success`, and that `head_sha` matches the PR's **current** head SHA
 (rule 1) — a stale run from an earlier push, or a different check
@@ -176,7 +187,10 @@ Do not proceed to tagging while this run is pending or red.
 git checkout main
 git pull --ff-only
 git fetch origin main:refs/remotes/origin/main
-test "$(git rev-parse main)" = "$(git rev-parse refs/remotes/origin/main)" && echo OK
+test "$(git rev-parse main)" = "$(git rev-parse refs/remotes/origin/main)" || {
+    echo "ERROR: local main ($(git rev-parse main)) does not match origin/main ($(git rev-parse refs/remotes/origin/main)); refusing to tag" >&2
+    exit 1
+}
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
@@ -185,13 +199,20 @@ git push origin vX.Y.Z
 git checkout main
 git pull --ff-only
 git fetch origin main:refs/remotes/origin/main
-if ((git rev-parse main) -eq (git rev-parse refs/remotes/origin/main)) { 'OK' }
+if ((git rev-parse main) -ne (git rev-parse refs/remotes/origin/main)) {
+    throw "local main does not match origin/main; refusing to tag"
+}
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-The `test`/`if` check must print `OK` before you push the tag (rule 2).
-Pushing the tag triggers `.github/workflows/release.yml`, which
+This must be fail-closed: the comparison guard has to terminate the
+script (`exit 1` / `throw`) on mismatch *before* `git tag` can run —
+not merely skip printing a success message while later commands still
+execute (`... && echo OK` followed by unconditional lines is **not**
+sufficient, since `git tag` on the next line runs regardless of whether
+`echo OK` ran). Do not proceed unless the guard passes silently
+(rule 2). Pushing the tag triggers `.github/workflows/release.yml`, which
 independently re-verifies the same commit-equals-`origin/main` check,
 re-runs `node tools/validate.mjs --release-tag vX.Y.Z` (strict-greater
 baseline check) and `node tools/run-tests.mjs`, generates notes via
@@ -234,7 +255,19 @@ pick up any workflow fix you just made. Instead:
 gh release delete vX.Y.Z --yes 2>/dev/null || true   # only if a partial release was created
 git push origin :refs/tags/vX.Y.Z
 git tag -d vX.Y.Z
-# fix the underlying problem, re-verify Step 6's OK check, then:
+# fix the underlying problem, re-verify Step 6's fail-closed check, then:
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+```powershell
+gh release delete vX.Y.Z --yes 2>$null   # only if a partial release was created; PowerShell does not
+                                          # stop on a non-zero exit from an external command by default,
+                                          # so this already behaves like bash's "|| true" — it only
+                                          # suppresses the "release not found" stderr noise.
+git push origin :refs/tags/vX.Y.Z
+git tag -d vX.Y.Z
+# fix the underlying problem, re-verify Step 6's fail-closed check, then:
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
@@ -248,13 +281,24 @@ release the fix as the next PATCH instead.
 ## Legacy tag/release cleanup (only when explicitly retiring one)
 
 Only after the **replacement** release is confirmed successful (Step
-7) may you delete an old release/tag, and always in this order — `gh
-release delete <TAG>` does not remove the tag unless you pass
-`--cleanup-tag`; deleting the tag first would leave an orphaned release
+7) may you delete an old release/tag, and always in this exact order,
+as three separate commands. Always pass `--yes` to skip the
+interactive confirmation prompt (non-interactive shells hang without
+it), and **never pass `--cleanup-tag`** to `gh release delete` here —
+tag deletion is intentionally its own explicit, ordered step below, not
+something to bundle into the release-delete call; `gh release delete
+<TAG>` (without `--cleanup-tag`) does not touch the tag, which is why
+deleting the tag first would otherwise leave an orphaned release
 pointing at nothing:
 
 ```bash
-gh release delete <old-tag>
+gh release delete <old-tag> --yes
+git push origin :refs/tags/<old-tag>
+git tag -d <old-tag>
+```
+
+```powershell
+gh release delete <old-tag> --yes
 git push origin :refs/tags/<old-tag>
 git tag -d <old-tag>
 ```

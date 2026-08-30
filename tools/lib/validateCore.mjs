@@ -11,9 +11,12 @@ import { validateScriptChangelogStructure } from './changelog.mjs';
 import { listScriptIds } from './repoScripts.mjs';
 import { listTags, showFileAtRef, refExists } from './gitRepo.mjs';
 
-// Tags that are permanently retired and must never be selected as a release
-// baseline again, regardless of what they parse to.
-const RETIRED_TAGS = new Set(['v1.0.0']);
+// Tags that are permanently retired: they must never be selected as a
+// release baseline (see findReleaseBaseline) AND release mode must reject
+// them outright as the tag currently being released (see
+// runReleaseModeCheck) — both call sites need to consult this, so it is
+// exported rather than kept as a validateCore-private detail.
+export const RETIRED_TAGS = new Set(['v1.0.0']);
 
 /**
  * Builds the list of {id, dir, userScriptPath, changelogPath} descriptors
@@ -188,6 +191,20 @@ export function runReleaseModeCheck(repoRoot, ids, currentVersion, releaseTag) {
     const parsedTag = parseRepoTag(releaseTag);
     if (!parsedTag) {
         return { ok: false, errors: [`--release-tag "${releaseTag}" is not a valid "vX.Y.Z" tag`] };
+    }
+    if (RETIRED_TAGS.has(releaseTag)) {
+        // This must be checked before any other release-mode logic (version
+        // equality, baseline selection, strictly-greater comparison), since
+        // those can all otherwise pass on their own merits — e.g. if the
+        // scripts being released are themselves bumped to 1.0.0 and a valid
+        // prior synchronized tag like v0.9.0 exists as baseline. Excluding
+        // v1.0.0 only from findReleaseBaseline's *candidate* list is not
+        // enough: that only stops v1.0.0 from being reused as someone else's
+        // baseline, it does not stop v1.0.0 itself from being (re)released.
+        return {
+            ok: false,
+            errors: [`--release-tag "${releaseTag}" is permanently retired and must never be released again (see RETIRED_TAGS in tools/lib/validateCore.mjs)`],
+        };
     }
     if (parsedTag.version !== currentVersion) {
         errors.push(`current version ${currentVersion} does not match release tag version ${parsedTag.version}`);

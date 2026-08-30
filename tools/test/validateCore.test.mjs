@@ -13,6 +13,7 @@ import {
     gitSetFakeOriginRef,
 } from './helpers.mjs';
 import { listScriptIds } from '../lib/repoScripts.mjs';
+import { compareSemver } from '../lib/semver.mjs';
 import {
     collectScripts,
     checkFilesExist,
@@ -321,4 +322,52 @@ test('findReleaseBaseline fails with "no valid candidate" when only retired/curr
     const result = findReleaseBaseline(dir, ids, 'v0.9.0');
     assert.equal(result.ok, false);
     assert.match(result.error, /no valid release baseline/i);
+});
+
+// ---------------------------------------------------------------------------
+// CRITICAL 1 regression: --release-tag v1.0.0 must be rejected as the
+// *current* release tag, not merely excluded as a baseline *candidate*.
+// Before the fix, runReleaseModeCheck only ever consulted RETIRED_TAGS
+// inside findReleaseBaseline (candidate exclusion). If the scripts
+// currently being released themselves carry version 1.0.0 and a valid
+// prior synchronized tag (e.g. v0.9.0) exists as baseline, current
+// (1.0.0) is strictly greater than baseline (0.9.0) and the release-tag
+// version equality check also passes — so the whole call would
+// incorrectly report ok:true for `--release-tag v1.0.0`, silently
+// reviving the permanently-retired tombstone tag.
+// ---------------------------------------------------------------------------
+
+function buildRetiredCurrentTagFixture() {
+    const dir = scratch('release-retired-current-tag');
+    const ids = ['alpha', 'beta'];
+    writeFixtureScripts(dir, ids, '0.9.0');
+    gitInit(dir); // commit 1: synchronized v0.9.0, valid prior baseline
+    gitTag(dir, 'v0.9.0');
+
+    // Scripts have now been bumped to 1.0.0 for the release under test, but
+    // v1.0.0 has NOT been tagged yet (mirrors the real Step-6 tagging moment).
+    writeFixtureScripts(dir, ids, '1.0.0');
+    gitCommitAll(dir, 'bump to 1.0.0 (attempting to reuse retired tag)');
+    gitSetFakeOriginRef(dir, 'main', 'HEAD');
+    return { dir, ids };
+}
+
+test('runReleaseModeCheck rejects --release-tag v1.0.0 even when current scripts are 1.0.0 and a valid v0.9.0 baseline exists (tombstone must be enforced on the current tag, not just baseline candidates)', () => {
+    const { dir, ids } = buildRetiredCurrentTagFixture();
+
+    // Sanity check: v0.9.0 really is a valid, selectable baseline candidate
+    // here, and 1.0.0 really is strictly greater than it - i.e. every other
+    // check this call performs would pass. Only the tombstone rule must be
+    // what fails this call.
+    const baseline = findReleaseBaseline(dir, ids, 'v1.0.0');
+    assert.equal(baseline.ok, true, baseline.error);
+    assert.equal(baseline.baseline.tag, 'v0.9.0');
+    assert.ok(compareSemver('1.0.0', baseline.baseline.version) > 0);
+
+    const result = runReleaseModeCheck(dir, ids, '1.0.0', 'v1.0.0');
+    assert.equal(result.ok, false, 'runReleaseModeCheck must reject --release-tag v1.0.0 outright');
+    assert.ok(
+        result.errors.some((e) => /retired/i.test(e) && /v1\.0\.0/.test(e)),
+        `expected a "retired" error mentioning v1.0.0, got: ${JSON.stringify(result.errors)}`,
+    );
 });

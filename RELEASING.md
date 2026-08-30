@@ -39,9 +39,14 @@ used for any current release.
 >   annotated tag and a plain `git fetch --tags` will not overwrite an
 >   existing same-name tag — reusing the name would make `v1.0.0` point
 >   to different commits for different people. `tools/validate.mjs`
->   enforces this by hard-excluding `v1.0.0` from release-baseline
->   selection. Future `1.x` releases must start at `1.0.1` or later
->   (e.g. `1.1.0`, `2.0.0`), never `1.0.0` again.
+>   enforces this two ways: it hard-excludes `v1.0.0` from
+>   release-baseline *candidate* selection, **and** `--release-tag
+>   v1.0.0` itself is rejected outright with a `FAIL [release] ...
+>   permanently retired` error, before any version-equality or
+>   strictly-greater check even runs — so this fails closed even if a
+>   future script version happened to be `1.0.0` and a valid prior
+>   baseline existed. Future `1.x` releases must start at `1.0.1` or
+>   later (e.g. `1.1.0`, `2.0.0`), never `1.0.0` again.
 > - Older per-script tags (`ldc-batch-download-v0.8.2`,
 >   `ms-learn-lang-switch-tw-v0.3.0`, etc.) predate synchronization and
 >   remain for history, but no new per-script tags are created.
@@ -64,10 +69,12 @@ This repo has deterministic, dependency-free Node.js tooling in
   mode**: the current version must be `>=` the version on
   `refs/remotes/origin/main` (never lower). With
   **`--release-tag vX.Y.Z`** it instead runs **release mode**: the
-  current version must equal the tag's version and be **strictly
-  greater** than the best matching prior synchronized repo-wide tag
-  (legacy per-script tags and the permanently retired `v1.0.0` are
-  excluded from consideration).
+  release tag itself is rejected outright if it is `v1.0.0` (the
+  permanently retired tag — see Tag history above), independent of any
+  other check; otherwise the current version must equal the tag's
+  version and be **strictly greater** than the best matching prior
+  synchronized repo-wide tag (legacy per-script tags and `v1.0.0` are
+  also excluded from baseline-candidate consideration).
 - **`node tools/run-tests.mjs`** — discovers and runs every
   `scripts/*/test/*.test.js`; finding zero test files is treated as a
   failure (to catch a broken glob rather than silently passing).
@@ -122,10 +129,12 @@ Any failing step aborts before a Release is created (fail-closed).
 
 ## Cutting a release
 
-> The recommended workflow is **PR-based**: branch → commits → PR →
-> review → CI green → squash-merge → `main` CI green → tag → release
-> workflow verified. Direct-to-`main` commits are tolerated for trivial
-> doc fixes only.
+> The release preparation workflow is always **PR-based**: branch →
+> commits → PR → review → CI green → squash-merge → `main` CI green →
+> tag → release workflow verified. There is no direct-to-`main`
+> exception for release preparation, including trivial doc fixes —
+> every change that is part of cutting a release goes through a PR and
+> CI.
 
 ### 1. Bump **every** script's `@version` to the new shared version
 
@@ -220,13 +229,21 @@ gh run watch <run-id>
 ```
 
 Then verify the local `main` you're about to tag is exactly
-`origin/main`'s tip, and only then tag and push:
+`origin/main`'s tip, and only then tag and push. This check must be
+**fail-closed**: it has to terminate the script on mismatch *before*
+`git tag` can run, not just skip printing a success message while
+`git tag` still executes on the next line regardless
+(`... && echo OK` followed by unconditional commands is **not**
+sufficient):
 
 ```bash
 git checkout main
 git pull --ff-only
 git fetch origin main:refs/remotes/origin/main
-test "$(git rev-parse main)" = "$(git rev-parse refs/remotes/origin/main)" && echo OK
+test "$(git rev-parse main)" = "$(git rev-parse refs/remotes/origin/main)" || {
+    echo "ERROR: local main ($(git rev-parse main)) does not match origin/main ($(git rev-parse refs/remotes/origin/main)); refusing to tag" >&2
+    exit 1
+}
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
@@ -235,7 +252,9 @@ git push origin vX.Y.Z
 git checkout main
 git pull --ff-only
 git fetch origin main:refs/remotes/origin/main
-if ((git rev-parse main) -eq (git rev-parse refs/remotes/origin/main)) { 'OK' }
+if ((git rev-parse main) -ne (git rev-parse refs/remotes/origin/main)) {
+    throw "local main does not match origin/main; refusing to tag"
+}
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
@@ -282,6 +301,17 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
+```powershell
+gh release delete vX.Y.Z --yes 2>$null   # only if a partial release exists; PowerShell does not stop
+                                          # on a non-zero exit from an external command by default, so
+                                          # this already behaves like bash's "|| true" here.
+git push origin :refs/tags/vX.Y.Z
+git tag -d vX.Y.Z
+# fix the underlying problem, re-verify the origin/main equality check, then:
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
+```
+
 **Never change any script's content to work around this.** A version's
 script content is frozen the moment it lands on `main` (raw URLs are
 public immediately). If the underlying bug is in the scripts themselves
@@ -295,13 +325,22 @@ serves).
 Only retire a release/tag **after its replacement release has been
 confirmed successful** (Release workflow run green, `gh release view`
 shows it) — never delete the old one first as a "cleanup" step before
-the new one is verified. `gh release delete <TAG>` does not remove the
-tag unless `--cleanup-tag` is passed, so delete the release, then the
-remote tag, then the local tag, in that order (deleting the tag first
-would leave an orphaned release pointing at nothing):
+the new one is verified. Delete the release, then the remote tag, then
+the local tag, as three separate commands in that exact order (deleting
+the tag first would leave an orphaned release pointing at nothing).
+Always pass `--yes` to skip the interactive confirmation prompt, and
+**never pass `--cleanup-tag`** to `gh release delete` — tag deletion is
+intentionally a separate, explicit, ordered step here, not something to
+fold into the release-delete call:
 
 ```bash
-gh release delete <old-tag>
+gh release delete <old-tag> --yes
+git push origin :refs/tags/<old-tag>
+git tag -d <old-tag>
+```
+
+```powershell
+gh release delete <old-tag> --yes
 git push origin :refs/tags/<old-tag>
 git tag -d <old-tag>
 ```

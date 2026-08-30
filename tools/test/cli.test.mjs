@@ -1,12 +1,21 @@
 // CLI-contract integration tests: spawn the actual tools/*.mjs entry points
 // (the exact commands the Task 2 CI/Release workflows will invoke) against
 // the real repository to confirm exit codes and observable output.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { REPO_ROOT } from './helpers.mjs';
-import { parseArgs } from '../validate.mjs';
+import {
+    REPO_ROOT,
+    makeScratchDir,
+    removeScratchDir,
+    writeFixtureScripts,
+    gitInit,
+    gitCommitAll,
+    gitTag,
+    gitSetFakeOriginRef,
+} from './helpers.mjs';
+import { parseArgs, runValidate } from '../validate.mjs';
 
 function run(scriptRelPath, args = []) {
     return spawnSync(process.execPath, [path.join(REPO_ROOT, scriptRelPath), ...args], {
@@ -14,6 +23,16 @@ function run(scriptRelPath, args = []) {
         encoding: 'utf8',
     });
 }
+
+const scratchDirs = [];
+function scratch(prefix) {
+    const dir = makeScratchDir(prefix);
+    scratchDirs.push(dir);
+    return dir;
+}
+after(() => {
+    for (const dir of scratchDirs) removeScratchDir(dir);
+});
 
 test('CLI: node tools/validate.mjs (PR/push mode) succeeds on the real repository', () => {
     const result = run('tools/validate.mjs');
@@ -29,6 +48,37 @@ test('CLI: node tools/validate.mjs --release-tag v0.9.0 succeeds and reports the
 test('CLI: node tools/validate.mjs --release-tag v1.0.0 fails (retired tag reused)', () => {
     const result = run('tools/validate.mjs', ['--release-tag', 'v1.0.0']);
     assert.notEqual(result.status, 0);
+});
+
+// ---------------------------------------------------------------------------
+// CRITICAL 1 regression at the CLI layer: the real repository's current
+// version is 0.9.0, so the test above only ever reaches the "does not match
+// release tag version" branch and never actually exercises the tombstone
+// rejection. runValidate() takes an explicit repoRoot (exactly what the CLI
+// entry point calls with the real repo root), so it can be exercised here
+// against a fixture repo whose scripts really are bumped to 1.0.0, proving
+// the CLI-level call path rejects --release-tag v1.0.0 for the right reason
+// (retired), not merely because of a version mismatch that happens not to
+// apply in the fixture.
+// ---------------------------------------------------------------------------
+
+test('runValidate rejects --release-tag v1.0.0 for the "retired" reason when current scripts are themselves 1.0.0 with a valid prior v0.9.0 baseline', () => {
+    const dir = scratch('cli-retired-current-tag');
+    const ids = ['alpha', 'beta'];
+    writeFixtureScripts(dir, ids, '0.9.0');
+    gitInit(dir);
+    gitTag(dir, 'v0.9.0');
+
+    writeFixtureScripts(dir, ids, '1.0.0');
+    gitCommitAll(dir, 'bump to 1.0.0 (attempting to reuse retired tag)');
+    gitSetFakeOriginRef(dir, 'main', 'HEAD');
+
+    const { ok, report } = runValidate(['--release-tag', 'v1.0.0'], dir);
+    assert.equal(ok, false, report.join('\n'));
+    assert.ok(
+        report.some((line) => /retired/i.test(line) && /v1\.0\.0/.test(line)),
+        `expected a "retired"/v1.0.0 FAIL line, got:\n${report.join('\n')}`,
+    );
 });
 
 test('CLI: node tools/validate.mjs --release-tag with no value fails (does not silently fall back to PR/push mode)', () => {
