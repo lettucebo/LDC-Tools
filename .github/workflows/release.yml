@@ -1,0 +1,286 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Release tag to dry-run validate, in strict vX.Y.Z form and
+          matching the version the scripts would actually be released at
+          (e.g. the next real tag). This does not need to exist as a real
+          git tag - workflow_dispatch is read-only and never creates,
+          deletes, or pushes anything, and it never instantiates the
+          publish job - but it must match the current synchronized script
+          version or the release-mode validation step will fail. No
+          default is provided: you must supply the intended tag
+          explicitly for every manual dry run.
+        required: true
+
+# Read-only by default. Only the `publish` job below opts into
+# `contents: write`, and only that job is given a GH_TOKEN, so validation
+# (including every manual dry run) runs with no credential that could
+# create, modify, or delete a release, tag, or commit.
+permissions:
+  contents: read
+
+concurrency:
+  # Per-ref: two pushes of the same tag can never run this workflow twice
+  # concurrently. Cross-tag serialization is enforced separately, on the
+  # publish job itself (see jobs.publish.concurrency).
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate and test (read-only)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      validated_sha: ${{ steps.identity.outputs.validated_sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          # Full history/tags so tools/validate.mjs can resolve
+          # refs/remotes/origin/main plus every candidate baseline tag, and
+          # tools/release-notes.mjs can read each script's CHANGELOG.md.
+          fetch-depth: 0
+          # This job must not keep a usable git credential around: nothing
+          # here is allowed to write to the repository.
+          persist-credentials: false
+          # A real tag push already targets the tag commit. A manual
+          # workflow_dispatch dry run has no tag to check out, so it
+          # validates the supplied tag string against the tip of main.
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+
+      - name: Determine and validate release tag
+        id: tag
+        shell: bash
+        env:
+          # Context/input values are passed through env: and read only as
+          # shell variables below - never interpolated directly into the
+          # run: script body - so untrusted content (e.g. a crafted
+          # workflow_dispatch input) cannot be executed as shell code.
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_RELEASE_TAG"
+          else
+            TAG="$REF_NAME"
+          fi
+          if ! [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Release tag '$TAG' does not match the strict vX.Y.Z format." >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          # Only written after the strict regex above has accepted the value,
+          # so nothing attacker-controlled can reach GITHUB_ENV/GITHUB_OUTPUT.
+          {
+            echo "TAG=$TAG"
+            echo "VERSION=$VERSION"
+          } >> "$GITHUB_ENV"
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $TAG (version $VERSION)"
+
+      - name: Verify the commit under test is origin/main's tip
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+            echo "::error::refs/remotes/origin/main is missing; a fetch-depth: 0 checkout should always provide it. Refusing to validate a release without a main baseline." >&2
+            exit 1
+          fi
+          HEAD_COMMIT="$(git rev-parse HEAD^{commit})"
+          MAIN_COMMIT="$(git rev-parse refs/remotes/origin/main^{commit})"
+          if [ "$HEAD_COMMIT" != "$MAIN_COMMIT" ]; then
+            echo "::error::Commit under test is $HEAD_COMMIT, but origin/main tip is $MAIN_COMMIT. Refusing to release a commit that is not on main." >&2
+            exit 1
+          fi
+          echo "validated_sha=$HEAD_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Commit $HEAD_COMMIT matches origin/main tip."
+
+      - name: Setup Node.js (current LTS)
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Run release-mode validation
+        shell: bash
+        run: node tools/validate.mjs --release-tag "$TAG"
+
+      - name: Run release tooling tests
+        shell: bash
+        # These guard the release gate itself (tombstone enforcement, strict
+        # argument parsing, baseline selection), so they must run before any
+        # release can be published.
+        run: node --test "tools/test/*.test.mjs"
+
+      - name: Run userscript tests
+        shell: bash
+        run: node tools/run-tests.mjs
+
+      - name: Generate release notes
+        shell: bash
+        run: node tools/release-notes.mjs "$VERSION" > release-notes.md
+
+      - name: Dry run summary (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Dry run for $TAG completed successfully"
+            echo
+            echo "No release was created: workflow_dispatch runs this read-only job only."
+            echo "The publish job is not instantiated for manual runs, and this job"
+            echo "holds neither \`contents: write\` nor a GH_TOKEN."
+            echo
+            echo "<details><summary>Generated release notes</summary>"
+            echo
+            cat release-notes.md
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish GitHub release
+    # A manual dry run never reaches this job at all: it is not instantiated
+    # for workflow_dispatch, so the write permission and GH_TOKEN below only
+    # ever exist for a real tag push.
+    if: github.event_name == 'push'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      # Global (ref-independent) serialization of publication: only one
+      # release may be created at a time repo-wide, so an older tag's run
+      # cannot interleave with a newer one and win the "Latest" marker by
+      # finishing last. Combined with the remote-identity checks below (the
+      # tag must still be origin/main's tip at publish time), a stale tag run
+      # fails instead of overwriting a newer release.
+      group: release-publish
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.validate.outputs.tag }}
+      VERSION: ${{ needs.validate.outputs.version }}
+      VALIDATED_SHA: ${{ needs.validate.outputs.validated_sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          # gh authenticates via GH_TOKEN; git itself never needs to push
+          # from this job, so no credential is written into .git/config.
+          persist-credentials: false
+          ref: ${{ github.ref }}
+
+      - name: Setup Node.js (current LTS)
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Verify this checkout is the validated commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD_COMMIT="$(git rev-parse HEAD^{commit})"
+          if [ -z "$VALIDATED_SHA" ] || [ "$HEAD_COMMIT" != "$VALIDATED_SHA" ]; then
+            echo "::error::Publish checkout is $HEAD_COMMIT but the validated commit was '${VALIDATED_SHA}'. Refusing to publish an unvalidated commit." >&2
+            exit 1
+          fi
+          echo "Publishing validated commit $HEAD_COMMIT for tag $TAG."
+
+      - name: Generate release notes
+        shell: bash
+        run: node tools/release-notes.mjs "$VERSION" > release-notes.md
+
+      - name: Re-verify remote identity and create the release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          fail() { echo "::error::$*" >&2; exit 1; }
+
+          # Re-query the remote *now*, immediately before publishing: the
+          # validation job's view of main/the tag may be minutes old, and a
+          # force-push or a newer release merged in the meantime must abort
+          # this publication rather than overwrite it.
+          main_json="$(gh api "repos/$GH_REPO/git/ref/heads/main")"
+          main_type="$(printf '%s' "$main_json" | jq -r '.object.type')"
+          main_commit="$(printf '%s' "$main_json" | jq -r '.object.sha')"
+          [ "$main_type" = "commit" ] || fail "refs/heads/main on the remote resolves to a '$main_type' object, not a commit."
+
+          tag_ref_json="$(gh api "repos/$GH_REPO/git/ref/tags/$TAG")"
+          tag_ref_type="$(printf '%s' "$tag_ref_json" | jq -r '.object.type')"
+          tag_obj_sha="$(printf '%s' "$tag_ref_json" | jq -r '.object.sha')"
+          [ "$tag_ref_type" = "tag" ] || fail "Remote tag $TAG is a lightweight tag (ref object type '$tag_ref_type'). Release tags must be annotated: create it with 'git tag -a'."
+
+          tag_obj_json="$(gh api "repos/$GH_REPO/git/tags/$tag_obj_sha")"
+          tag_target_type="$(printf '%s' "$tag_obj_json" | jq -r '.object.type')"
+          tag_commit="$(printf '%s' "$tag_obj_json" | jq -r '.object.sha')"
+          [ "$tag_target_type" = "commit" ] || fail "Annotated tag $TAG peels to a '$tag_target_type' object, not a commit."
+
+          head_commit="$(git rev-parse HEAD^{commit})"
+          [ "$tag_commit" = "$head_commit" ] \
+            || fail "Remote tag $TAG now peels to $tag_commit but this run validated $head_commit. Refusing to publish: the tag was moved."
+          [ "$main_commit" = "$head_commit" ] \
+            || fail "Remote main is now $main_commit but this run validated $head_commit. Refusing to publish a tag that is no longer main's tip."
+
+          echo "Remote identity confirmed: tag $TAG = main = $head_commit."
+          gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --latest --verify-tag
+
+      - name: Verify remote identity again and roll back on mismatch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          head_commit="$(git rev-parse HEAD^{commit})"
+          drift=""
+
+          if ! tag_ref_json="$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" 2>&1)"; then
+            drift="could not re-read remote tag $TAG after publishing: $tag_ref_json"
+          else
+            tag_obj_sha="$(printf '%s' "$tag_ref_json" | jq -r '.object.sha')"
+            if ! tag_obj_json="$(gh api "repos/$GH_REPO/git/tags/$tag_obj_sha" 2>&1)"; then
+              drift="could not peel remote tag $TAG after publishing: $tag_obj_json"
+            elif [ "$(printf '%s' "$tag_obj_json" | jq -r '.object.sha')" != "$head_commit" ]; then
+              drift="remote tag $TAG no longer peels to the published commit $head_commit"
+            fi
+          fi
+
+          if [ -z "$drift" ]; then
+            if ! main_json="$(gh api "repos/$GH_REPO/git/ref/heads/main" 2>&1)"; then
+              drift="could not re-read remote main after publishing: $main_json"
+            elif [ "$(printf '%s' "$main_json" | jq -r '.object.sha')" != "$head_commit" ]; then
+              drift="remote main advanced away from the published commit $head_commit during publication"
+            fi
+          fi
+
+          if [ -n "$drift" ]; then
+            echo "::error::Release identity changed during publication ($drift). Removing the release just created for $TAG." >&2
+            if gh release delete "$TAG" --yes; then
+              echo "::error::Rolled back: the GitHub Release for $TAG was deleted. The tag itself was left untouched; investigate before retrying." >&2
+            else
+              echo "::error::CRITICAL: rollback FAILED. A GitHub Release for $TAG exists but its identity could not be confirmed. Delete it manually with 'gh release delete $TAG --yes' after investigating." >&2
+            fi
+            exit 1
+          fi
+
+          echo "Post-publish verification passed: tag $TAG and main both remain at $head_commit."
+          gh release view "$TAG" --json tagName,isLatest,isDraft,isPrerelease

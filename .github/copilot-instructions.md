@@ -48,10 +48,38 @@ whose scripts were at `0.3.2`, `0.3.0` and `0.8.2`, everything moves to
 
 Because all scripts share one synchronized version, each release is a
 **single repo-wide tag** `v<X.Y.Z>` plus **one** GitHub Release covering
-all scripts — e.g. `v0.8.5`. Do **not** create per-script
+all scripts — e.g. `v0.8.5`, `v0.9.0`. Do **not** create per-script
 `<script-id>-v<X.Y.Z>` tags (that is the old scheme). Older per-script
-tags and the legacy repo-wide tags (`v0.4.0`, `v0.5.0`, `v1.0.0`) remain
-for history. See `RELEASING.md` for the full release procedure.
+tags and the legacy repo-wide tags `v0.4.0` / `v0.5.0` remain for
+history. See `RELEASING.md` for the full release procedure.
+
+`v1.0.0` was a legacy repo-wide tag/Release that predated synchronized
+versioning and is **permanently retired**: it must never be recreated
+or reused, even after deletion, because other clones/forks may still
+hold the old annotated tag and a plain `git fetch --tags` will not
+overwrite an existing same-name tag — reusing it would make `v1.0.0`
+point to different commits for different people. `tools/validate.mjs`
+hard-excludes it from release-baseline selection via `RETIRED_TAGS`.
+Future `1.x` releases must start at `1.0.1` or later, never `1.0.0`
+again.
+
+## Release tooling, CI, and the release skill
+
+- `tools/` holds dependency-free Node.js scripts shared by local use and
+  CI: `tools/validate.mjs` (metadata/version/CHANGELOG validation, plus
+  PR/push-mode and `--release-tag`-gated release-mode non-downgrade
+  checks), `tools/run-tests.mjs` (discovers and runs every
+  `scripts/*/test/*.test.js`), and `tools/release-notes.mjs` (builds
+  combined release notes from the root and per-script CHANGELOGs).
+- `.github/workflows/ci.yml` (workflow `CI`) runs validation and tests
+  on every pull request and on `push` to `main`.
+  `.github/workflows/release.yml` (workflow `Release`) runs on `v*.*.*`
+  tag pushes, re-validates in release mode, and publishes the GitHub
+  Release via `gh release create --verify-tag`.
+- `.github/skills/release/SKILL.md` is the step-by-step release
+  procedure for an assistant to follow, including the ordering rules
+  above and failure recovery; see `RELEASING.md` for the full narrative
+  reference.
 
 ## Folder layout per script
 
@@ -68,6 +96,20 @@ The root `README.md` / `README.zh-TW.md` is an index of all userscripts
 in the repo and should be kept up to date when a new script is added or
 removed.
 
+## Repo root layout
+
+```
+.github/
+├── copilot-instructions.md
+├── skills/<skill-id>/SKILL.md   ← includes skills/release/SKILL.md
+└── workflows/                   ← ci.yml, release.yml
+tools/                           ← validate.mjs, run-tests.mjs, release-notes.mjs, lib/
+scripts/<script-id>/             ← one folder per userscript, see below
+CHANGELOG.md                     ← repo-level (CI/tooling/docs/skills) changes
+README.md / README.zh-TW.md      ← index of all userscripts
+RELEASING.md                     ← full release procedure reference
+```
+
 ## Other conventions
 
-- 若使用 Python 的話，必須使用 Python 虛擬環境。
+- 若使用 Python 的話，必須使用 uv。

@@ -58,8 +58,9 @@ Tampermonkey 安裝，或點 script 名稱開啟詳細說明。
 - 每支 userscript 在 `scripts/<script-id>/` 下，有自己的
   `<script-id>.user.js`、`README.md`（雙語另含 `README.zh-TW.md`）、
   `CHANGELOG.md`。
-- Per-script tag schema：`<script-id>-v<X.Y.Z>`（如
-  `ldc-batch-download-v0.6.0`）。詳見 [RELEASING.md](./RELEASING.md)。
+- 單一 repo-wide release tag 方案：`v<X.Y.Z>`（如 `v0.9.0`），一個 tag、
+  一個 GitHub Release 涵蓋所有 script 的同步版號。詳見
+  [RELEASING.md](./RELEASING.md)。
 - 所有 script 採 MIT 授權。
 
 ## 貢獻

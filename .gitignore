@@ -1,0 +1,4 @@
+node_modules/
+
+# Scratch fixture directories created by tools/test/*.test.mjs
+tools/test/.tmp/

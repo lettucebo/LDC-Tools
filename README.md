@@ -65,9 +65,9 @@ To trigger a check immediately:
 - Each userscript is in `scripts/<script-id>/` with its own
   `<script-id>.user.js`, `README.md` (+ `README.zh-TW.md` if
   bilingual), and `CHANGELOG.md`.
-- Per-script tag scheme: `<script-id>-v<X.Y.Z>` (e.g.
-  `ldc-batch-download-v0.6.0`). See [RELEASING.md](./RELEASING.md) for
-  the full procedure.
+- Single repo-wide release tag scheme: `v<X.Y.Z>` (e.g. `v0.9.0`) covers
+  every script's synchronized version in one tag and one GitHub Release.
+  See [RELEASING.md](./RELEASING.md) for the full procedure.
 - All scripts in this repo are MIT licensed.
 
 ## Contributing
