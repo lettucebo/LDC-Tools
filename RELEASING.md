@@ -227,28 +227,101 @@ gh pr create --base main --head chore/release-vX.Y.Z `
   --title "chore(release): vX.Y.Z" --body-file <pr-body.md>
 ```
 
-Confirm the `CI` workflow's `Validate and test` job is green **on the
-PR's actual head SHA** before merging — don't rely on an at-a-glance
-green badge, and don't use `gh pr checks --required` (it only reports
-checks that branch protection marks required, so with no such rule it
-tells you nothing). Assert the check's identity instead: name, status,
-conclusion, and head SHA.
+The snippets below require `jq` on `PATH` in addition to `git` and
+`gh`. Confirm the `CI` workflow's `Validate and test` job is green **on
+the PR's actual head SHA** before merging — don't rely on an
+at-a-glance green badge, don't use `gh pr checks --required` (it only
+reports checks that branch protection marks required, so with no such
+rule it tells you nothing), and don't query commit check-runs
+generically (an
+unrelated check, e.g. a Copilot review check, can share a similar
+name). Bind the verification to the exact `ci.yml` workflow, the
+`pull_request` event, and the PR's *current* head SHA, then read the
+`Validate and test` job from that same run — if reruns left several
+matching runs, deterministically pick the newest one so an older
+success can never mask a newer failure.
 
 ```bash
 set -euo pipefail
 PR=<PR#>
 HEAD_SHA="$(gh pr view "$PR" --json headRefOid --jq '.headRefOid')"
-VERDICT="$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/check-runs" \
-  --jq '[.check_runs[] | select(.name == "Validate and test" and .status == "completed")]
-        | if length == 1 then .[0].conclusion else "ambiguous(\(length) matching check runs)" end')"
-if [ "$VERDICT" != "success" ]; then
-  echo "ERROR: CI 'Validate and test' on $HEAD_SHA is '$VERDICT'; refusing to merge" >&2
+[ -n "$HEAD_SHA" ] || { echo "ERROR: could not read the PR head SHA" >&2; exit 1; }
+
+RUNS_JSON="$(gh run list --workflow ci.yml --event pull_request \
+  --json databaseId,headSha,event,status,conclusion,createdAt \
+  --jq "[.[] | select(.headSha == \"$HEAD_SHA\" and .event == \"pull_request\")]")"
+RUN_COUNT="$(printf '%s' "$RUNS_JSON" | jq 'length')"
+if [ "$RUN_COUNT" -eq 0 ]; then
+  echo "ERROR: no ci.yml pull_request run found for head SHA $HEAD_SHA" >&2
   exit 1
 fi
-gh run list --workflow ci.yml --event pull_request \
-  --json databaseId,headSha,status,conclusion \
-  --jq ".[] | select(.headSha == \"$HEAD_SHA\")"
+
+# Reruns can leave several runs for the same head SHA. Sort by
+# createdAt then databaseId and take the last so the newest run is
+# always the one judged, never an older success sorted after it.
+RUN_JSON="$(printf '%s' "$RUNS_JSON" | jq 'sort_by(.createdAt, .databaseId) | last')"
+RUN_ID="$(printf '%s' "$RUN_JSON" | jq -r '.databaseId')"
+RUN_STATUS="$(printf '%s' "$RUN_JSON" | jq -r '.status')"
+RUN_CONCLUSION="$(printf '%s' "$RUN_JSON" | jq -r '.conclusion')"
+if [ "$RUN_STATUS" != "completed" ] || [ "$RUN_CONCLUSION" != "success" ]; then
+  echo "ERROR: newest ci.yml pull_request run $RUN_ID for $HEAD_SHA is status=$RUN_STATUS conclusion=$RUN_CONCLUSION; refusing to merge" >&2
+  exit 1
+fi
+
+JOB_JSON="$(gh run view "$RUN_ID" --json jobs \
+  --jq '[.jobs[] | select(.name == "Validate and test")]
+        | if length == 1 then .[0]
+          else {"status": "ambiguous(\(length) matching jobs)", "conclusion": "ambiguous(\(length) matching jobs)"} end')"
+JOB_STATUS="$(printf '%s' "$JOB_JSON" | jq -r '.status')"
+JOB_CONCLUSION="$(printf '%s' "$JOB_JSON" | jq -r '.conclusion')"
+if [ "$JOB_STATUS" != "completed" ] || [ "$JOB_CONCLUSION" != "success" ]; then
+  echo "ERROR: 'Validate and test' job in run $RUN_ID (head $HEAD_SHA) is status=$JOB_STATUS conclusion=$JOB_CONCLUSION; refusing to merge" >&2
+  exit 1
+fi
+echo "OK: ci.yml run $RUN_ID (pull_request @ $HEAD_SHA) 'Validate and test' completed/success"
 ```
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$pr = '<PR#>'
+$headSha = gh pr view $pr --json headRefOid --jq '.headRefOid'
+if ($LASTEXITCODE -ne 0 -or -not $headSha) { throw 'could not read the PR head SHA' }
+$headSha = $headSha.Trim()
+
+$runsJson = gh run list --workflow ci.yml --event pull_request `
+  --json databaseId,headSha,event,status,conclusion,createdAt `
+  --jq "[.[] | select(.headSha == `"$headSha`" and .event == `"pull_request`")]"
+if ($LASTEXITCODE -ne 0) { throw 'could not list ci.yml pull_request runs' }
+$runs = $runsJson | ConvertFrom-Json
+if (-not $runs -or $runs.Count -eq 0) { throw "no ci.yml pull_request run found for head SHA $headSha" }
+
+# Reruns can leave several runs for the same head SHA. Sort by
+# createdAt then databaseId and take the last so the newest run is
+# always the one judged, never an older success sorted after it.
+$run = $runs | Sort-Object -Property createdAt, databaseId | Select-Object -Last 1
+if ($run.status -ne 'completed' -or $run.conclusion -ne 'success') {
+    throw "newest ci.yml pull_request run $($run.databaseId) for $headSha is status=$($run.status) conclusion=$($run.conclusion); refusing to merge"
+}
+
+$jobJson = gh run view $run.databaseId --json jobs `
+  --jq '[.jobs[] | select(.name == "Validate and test")]
+        | if length == 1 then .[0]
+          else {"status": "ambiguous(\(length) matching jobs)", "conclusion": "ambiguous(\(length) matching jobs)"} end'
+if ($LASTEXITCODE -ne 0) { throw "could not read jobs for run $($run.databaseId)" }
+$job = $jobJson | ConvertFrom-Json
+if ($job.status -ne 'completed' -or $job.conclusion -ne 'success') {
+    throw "'Validate and test' job in run $($run.databaseId) (head $headSha) is status=$($job.status) conclusion=$($job.conclusion); refusing to merge"
+}
+Write-Host "OK: ci.yml run $($run.databaseId) (pull_request @ $headSha) 'Validate and test' completed/success"
+```
+
+A stale run from an earlier push, a run from a different workflow or
+event, or a job with a similar name from a different run, does not
+count — that is exactly what the `ci.yml` workflow filter, the
+`pull_request` event filter, the exact head-SHA filter, and reading the
+job from that same run's `databaseId` rule out. When reruns leave
+multiple matching runs, the newest one (sorted by `createdAt`, tie
+broken by `databaseId`) is always the one judged.
 
 Then squash-merge with the branch auto-deleted:
 
@@ -389,7 +462,8 @@ fi
 git push origin ":refs/tags/$TAG"
 [ -z "$(git ls-remote --tags origin "refs/tags/$TAG")" ] \
   || { echo "ERROR: remote tag $TAG still exists" >&2; exit 1; }
-if [ -n "$(git tag --list "$TAG")" ]; then git tag -d "$TAG"; fi
+TAG_LIST="$(git tag --list "$TAG")"
+if [ -n "$TAG_LIST" ]; then git tag -d "$TAG"; fi
 
 # Fix the underlying problem, then redo step 5 in full.
 ```
@@ -414,7 +488,9 @@ if ($LASTEXITCODE -ne 0) { throw "could not delete remote tag $tag" }
 $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
 if ($LASTEXITCODE -ne 0) { throw "could not verify remote tag deletion" }
 if ($remoteTag) { throw "remote tag $tag still exists" }
-if (git tag --list $tag) { git tag -d $tag; if ($LASTEXITCODE -ne 0) { throw "could not delete local tag $tag" } }
+$tagList = git tag --list $tag
+if ($LASTEXITCODE -ne 0) { throw "git tag --list $tag failed; refusing to decide on the local tag" }
+if ($tagList) { git tag -d $tag; if ($LASTEXITCODE -ne 0) { throw "could not delete local tag $tag" } }
 ```
 
 **Never change any script's content to work around this.** A version's
@@ -452,7 +528,8 @@ STILL="$(gh api --paginate "repos/{owner}/{repo}/releases" \
 git push origin ":refs/tags/$OLD_TAG"
 [ -z "$(git ls-remote --tags origin "refs/tags/$OLD_TAG")" ] \
   || { echo "ERROR: remote tag $OLD_TAG still exists" >&2; exit 1; }
-if [ -n "$(git tag --list "$OLD_TAG")" ]; then git tag -d "$OLD_TAG"; fi
+OLD_TAG_LIST="$(git tag --list "$OLD_TAG")"
+if [ -n "$OLD_TAG_LIST" ]; then git tag -d "$OLD_TAG"; fi
 ```
 
 ```powershell
@@ -471,7 +548,9 @@ if ($LASTEXITCODE -ne 0) { throw "could not delete remote tag $oldTag" }
 $remoteTag = git ls-remote --tags origin "refs/tags/$oldTag"
 if ($LASTEXITCODE -ne 0) { throw "could not verify remote tag deletion" }
 if ($remoteTag) { throw "remote tag $oldTag still exists" }
-if (git tag --list $oldTag) { git tag -d $oldTag; if ($LASTEXITCODE -ne 0) { throw "could not delete local tag $oldTag" } }
+$oldTagList = git tag --list $oldTag
+if ($LASTEXITCODE -ne 0) { throw "git tag --list $oldTag failed; refusing to decide on the local tag" }
+if ($oldTagList) { git tag -d $oldTag; if ($LASTEXITCODE -ne 0) { throw "could not delete local tag $oldTag" } }
 ```
 
 Other clones/forks must run `git fetch --prune --prune-tags` to see the
