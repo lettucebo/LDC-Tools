@@ -14,10 +14,14 @@ each one has to be opened individually. This userscript adds, on top of the
 original site:
 
 - A ✅ checkbox next to every course row
-- A header toolbar: pick folder / select all / clear / download / 📊 show progress
+- A header toolbar: pick folder / select all / clear / 🆕 select updated /
+  download / 📊 show progress
 - A floating progress panel (with retry-on-failure and copy-error-list)
 - A pre-flight confirmation dialog (course count / file count / total size /
   destination)
+- Last-download tracking: a `⏱ Last download` label and `🆕` badges that
+  highlight courses updated since you last downloaded them (see
+  [Last-download tracking](#last-download-tracking) below)
 
 The resulting local folder layout looks like this:
 
@@ -118,6 +122,10 @@ To trigger a check immediately:
    - Files that already exist with the same size are skipped (so you can
      re-run the same batch)
    - Failed files are displayed in the panel and you can "copy error list"
+5. **On later visits**: check the `⏱ Last download` label in the toolbar,
+   then click `🆕 Select updated` to add every visible course updated
+   since that baseline to your current selection (see
+   [Last-download tracking](#last-download-tracking) below for details)
 
 ## Tampermonkey menu commands
 
@@ -128,6 +136,9 @@ Click the Tampermonkey icon → LDC Batch Downloader to access:
 - `LDC: Set concurrency (1-4)` — change the parallel download count
   (default is 2)
 - `LDC: Token status` — show how long the current auth token is valid for
+- `LDC: Reset last-download history` — after a confirmation prompt, clears
+  the global `⏱ Last download` timestamp and every per-course timestamp;
+  all `🆕` badges disappear until you download again
 
 ## Sort by last-updated date
 
@@ -146,6 +157,54 @@ Behavior:
 - Your choice is persisted with `GM.setValue` and restored the next time you open the site.
 - If the LDC API ever omits all date fields, the dropdown auto-disables and shows a ⚠️ tooltip.
 
+## Last-download tracking
+
+The toolbar remembers when you last successfully downloaded, so you can spot
+which courses have new content without re-checking every row by hand.
+
+- **`⏱ Last download: <date/time>`** in the toolbar shows when the last
+  *fully successful* batch **started**. The timestamp is only recorded
+  after that batch completes with **no failures, not paused, and not
+  cancelled** — a batch that ends with any failed file, or one you
+  cancel/pause partway through, never moves this label. Hover it for the
+  full local timestamp and how many courses have their own tracked
+  timestamp.
+- **Per-course timestamps advance independently.** Even inside a batch that
+  has failures elsewhere, every course whose own files *all* finished as
+  `done` or `skipped` gets its per-course timestamp updated — one failing
+  course does not hold back the others.
+- **Skipped (same-size) files count as success.** A file skipped because an
+  identical-size copy already exists on disk counts toward that course's/
+  batch's completion; it is not treated as a failure.
+- **`🆕` badge** appears next to a course row when that course has files
+  updated (by `lastModified`) after the applicable baseline: the course's
+  *own* last-download timestamp if one is tracked, otherwise the *global*
+  `⏱ Last download` timestamp. A course you've never downloaded before still
+  gets a baseline this way (falling back to the global timestamp) instead of
+  showing no baseline at all. **On first use** — before you've completed any
+  download — there is no baseline yet, so **no badges are shown**.
+- **`🆕 Select updated` button** selects every *currently visible* course row
+  carrying the `🆕` badge (collapsed/hidden rows and categories are
+  skipped) and **adds them to your existing selection** rather than
+  replacing it. It stays disabled until there is at least one tracked
+  timestamp and the course list has date metadata.
+- **`LDC: Reset last-download history`** (Tampermonkey menu, see above)
+  clears both the global and every per-course timestamp after a
+  confirmation prompt; all `🆕` badges disappear until you download again.
+
+### Storage limitation
+
+Last-download history is stored with `GM.setValue` / `GM.getValue`, which is
+**local to the browser profile running the userscript** — it is *not* tied
+to your chosen destination folder. In practice:
+
+- Downloading into the **same destination folder** from a different browser,
+  browser profile, or machine starts with no history (no `🆕` badges), even
+  though the files already exist on disk there.
+- Conversely, switching to a **different destination folder** in the same
+  browser/profile keeps your existing last-download history — the `🆕`
+  badges and `⏱ Last download` label are unaffected by which folder you pick.
+
 ## Behavior details
 
 | Situation | Handling |
@@ -158,6 +217,10 @@ Behavior:
 | 401 token expired | Pause the whole batch and prompt to refresh the page |
 | Tab closed mid-download | Whole batch aborted; rerunning skips already-completed files |
 | Multiple tabs open at once | Mutually excluded via `navigator.locks`; the second tab is blocked |
+| History written from two tabs | Each batch's result is merged into the stored history under a separate `ldc-download-history` Web Lock (storage is re-read inside the lock), so timestamps only ever move forward and one tab cannot erase the other's |
+| Global `⏱ Last download` label | Advances only after a batch that finishes with no failures, not paused, not cancelled |
+| Per-course last-download timestamp | Advances independently for any course whose own files all finished `done`/`skipped`, even if other courses in the batch failed |
+| Skipped (same-size) file, for tracking purposes | Counts as success toward the course's/batch's completion |
 
 ## Known limitations
 
@@ -168,6 +231,14 @@ Behavior:
   downloaded)
 - ❌ No "expand every category and download the whole site" shortcut (to
   prevent accidental misuse)
+- ❌ Last-download history is local to the browser/profile/machine running
+  the script, not tied to the destination folder — see
+  [Storage limitation](#storage-limitation) above
+- ⚠️ LDC's course dates are often **day-granular** (a date with no time,
+  which is read as local midnight), while the last-download timestamp is a
+  real wall-clock time. A course updated *later on the same calendar day*
+  as your download therefore usually cannot be distinguished from one you
+  already have, and stays un-badged until it gets a newer date.
 
 ## Development
 
@@ -194,6 +265,7 @@ internally:
 | `fsaWriter` | File System Access API wrapper, persists handle in IndexedDB |
 | `selection` | Selection state (keyed by stable ID) |
 | `orchestrator` | Concurrent queue, retry, skip-if-exists, multi-tab `navigator.locks` |
+| `downloadHistory` | Last-download timestamps (global + per course): `GM` storage, monotonic cross-tab merge under `navigator.locks`, `🆕` baseline helpers |
 | `ui` | Toolbar, checkbox injection, progress panel, preflight dialog |
 
 Reverse-engineered LDC API:

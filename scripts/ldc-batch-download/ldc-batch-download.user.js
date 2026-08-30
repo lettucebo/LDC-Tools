@@ -2,7 +2,7 @@
 // @name         LDC Batch Downloader
 // @name:zh-TW   LDC 批次下載
 // @namespace    https://github.com/lettucebo/TampermonkeyScripts
-// @version      0.8.5
+// @version      0.9.0
 // @description  Batch-download multiple courses from Microsoft Learning Download Center into a chosen folder, organized as "{code} {title}/{code}-{language}/".
 // @description:zh-TW 在 Microsoft Learning Download Center 一次勾選多門課程並批次下載到指定資料夾，自動依「{課程編號} {課程名稱}/{課程編號}-{語言}/」結構整理
 // @author       lettucebo
@@ -32,6 +32,7 @@
 
     const APP_ID = 'ldc-batch-downloader';
     const LOCK_NAME = 'ldc-batch-download';
+    const HISTORY_LOCK_NAME = 'ldc-download-history';
     const IDB_NAME = 'ldc-batch-downloader';
     const IDB_STORE = 'state';
     const IDB_KEY_ROOT_HANDLE = 'rootDirHandle';
@@ -41,8 +42,12 @@
     const RETRY_DELAYS_MS = [1000, 3000, 9000];
     const TOKEN_REFRESH_MARGIN_SEC = 60;
     const TOKEN_REFRESH_TIMEOUT_MS = 30000;
-    const SCRIPT_VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '0.8.2';
+    const SCRIPT_VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '0.9.0';
     const SCRIPT_AUTHOR = 'Money Yu';
+    const HISTORY_MAX_ENTRIES = 3000;
+    const HISTORY_LOCK_TIMEOUT_MS = 10000;
+    const LAST_DOWNLOAD_AT_KEY = 'ldc.lastDownloadAt';
+    const COURSE_DOWNLOADS_KEY = 'ldc.courseDownloads';
 
     // ─────────────────────────────────────────────────────────────────────────
     // 1. Token interception (must run synchronously at document-start)
@@ -704,7 +709,223 @@
     })();
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 10. Orchestrator (queue + retry + checkpoint)
+    // 10. downloadHistory (last-download tracking; pure helpers + GM storage)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const downloadHistory = (() => {
+        let globalTs = 0;      // ms epoch of the last fully-successful batch, or 0
+        let perCourse = {};    // rowName → ms epoch of last completion for that course
+
+        function isPositiveFiniteNumber(v) {
+            return typeof v === 'number' && Number.isFinite(v) && v > 0;
+        }
+        function isValidCap(v) {
+            return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+        }
+
+        // Groups tasks by rowName; a course "completes" only when every one of its
+        // tasks is done or skipped. Courses with any pending/downloading/retrying/
+        // failed task (e.g. left behind by a cancel or a paused queue) are excluded.
+        // allComplete additionally requires a non-empty task list where every task
+        // (across all courses) is done or skipped.
+        function summarizeCourseCompletion(tasks) {
+            const byRow = new Map();
+            if (Array.isArray(tasks)) {
+                for (const t of tasks) {
+                    if (!t || typeof t.rowName !== 'string' || !t.rowName) continue;
+                    if (!byRow.has(t.rowName)) byRow.set(t.rowName, []);
+                    byRow.get(t.rowName).push(t);
+                }
+            }
+            const completedRowNames = [];
+            for (const [rowName, rowTasks] of byRow) {
+                if (rowTasks.every((t) => t.status === 'done' || t.status === 'skipped')) {
+                    completedRowNames.push(rowName);
+                }
+            }
+            const allComplete = Array.isArray(tasks) && tasks.length > 0
+                && tasks.every((t) => t && (t.status === 'done' || t.status === 'skipped'));
+            return { completedRowNames, allComplete };
+        }
+
+        // Baseline used for the "updated since" predicate: a valid per-course
+        // timestamp wins, otherwise the valid global timestamp, otherwise 0
+        // (meaning "no baseline yet" — nothing should be considered updated).
+        function baselineFor(rowName, map, gTs) {
+            const perCourseTs = map && typeof map === 'object' ? map[rowName] : undefined;
+            if (isPositiveFiniteNumber(perCourseTs)) return perCourseTs;
+            if (isPositiveFiniteNumber(gTs)) return gTs;
+            return 0;
+        }
+
+        function isUpdatedSince(lastModified, baseline) {
+            return isPositiveFiniteNumber(lastModified) && isPositiveFiniteNumber(baseline) && lastModified > baseline;
+        }
+
+        function formatLocalDateTime(ms) {
+            if (!isPositiveFiniteNumber(ms)) return '—';
+            const d = new Date(ms);
+            if (Number.isNaN(d.getTime())) return '—';
+            const pad = (n) => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
+
+        // Retains only valid positive-timestamp entries, newest first, capped at `cap`
+        // (default HISTORY_MAX_ENTRIES). Any non-plain-object map (null, string, array,
+        // etc.) is treated as malformed and yields an empty object.
+        function pruneHistory(map, cap) {
+            const c = isValidCap(cap) ? Math.floor(cap) : HISTORY_MAX_ENTRIES;
+            if (!map || typeof map !== 'object' || Array.isArray(map)) return {};
+            const entries = Object.entries(map).filter(([k, v]) => typeof k === 'string' && k && isPositiveFiniteNumber(v));
+            entries.sort((x, y) => y[1] - x[1]); // newest (largest timestamp) first
+            const kept = entries.slice(0, Math.max(0, c));
+            const out = {};
+            for (const [k, v] of kept) out[k] = v;
+            return out;
+        }
+
+        // Merges one finished batch into the persisted state. `persisted` must be the
+        // state re-read from storage inside the history lock — never the in-memory
+        // snapshot taken at boot, otherwise another tab's reset or newer writes would
+        // be resurrected/clobbered. Only `batch.completedRowNames` are touched; every
+        // other persisted key is carried over untouched, and every write is monotonic
+        // (Math.max), so a slow tab finishing an older batch can never regress history.
+        // The global timestamp advances only when `batch.advanceGlobal` is true.
+        function mergePersistedHistory(persisted, batch) {
+            const p = persisted && typeof persisted === 'object' ? persisted : {};
+            const b = batch && typeof batch === 'object' ? batch : {};
+            const cap = isValidCap(b.cap) ? Math.floor(b.cap) : HISTORY_MAX_ENTRIES;
+            const baseGlobal = isPositiveFiniteNumber(p.globalTs) ? p.globalTs : 0;
+            const merged = pruneHistory(p.perCourse, cap);
+            const ts = isPositiveFiniteNumber(b.startedAt) ? b.startedAt : 0;
+            if (ts > 0 && Array.isArray(b.completedRowNames)) {
+                for (const rowName of b.completedRowNames) {
+                    if (typeof rowName !== 'string' || !rowName) continue;
+                    const existing = merged[rowName];
+                    merged[rowName] = isPositiveFiniteNumber(existing) ? Math.max(existing, ts) : ts;
+                }
+            }
+            return {
+                globalTs: (b.advanceGlobal === true && ts > 0) ? Math.max(baseGlobal, ts) : baseGlobal,
+                perCourse: pruneHistory(merged, cap),
+            };
+        }
+
+        function hasGM() {
+            return typeof GM !== 'undefined' && GM && typeof GM.getValue === 'function' && typeof GM.setValue === 'function';
+        }
+
+        // Serializes history read-modify-write cycles across tabs. Web Locks are
+        // origin-scoped, so two tabs finishing batches at the same moment take turns
+        // instead of overwriting each other. Degrades to an unlocked run when the Lock
+        // Manager is missing or refuses the request (single-tab behaviour is identical).
+        // The wait is bounded: a wedged holder must never leave the caller — and with
+        // it the post-download UI — hanging. On timeout the merge still re-reads
+        // storage first, so only the cross-tab atomicity is lost.
+        async function withHistoryLock(fn) {
+            const locks = (typeof navigator !== 'undefined' && navigator.locks
+                && typeof navigator.locks.request === 'function') ? navigator.locks : null;
+            if (!locks) return fn();
+            let opts = {};
+            try {
+                if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+                    opts = { signal: AbortSignal.timeout(HISTORY_LOCK_TIMEOUT_MS) };
+                }
+            } catch (_) { opts = {}; }
+            let entered = false;
+            try {
+                return await locks.request(HISTORY_LOCK_NAME, opts, async () => { entered = true; return fn(); });
+            } catch (e) {
+                if (entered) throw e; // the callback itself failed — never run it twice
+                return fn();
+            }
+        }
+
+        // Reads the authoritative state for a merge. With GM storage present that is
+        // the freshly re-read persisted pair; without it there is no shared state, so
+        // the in-memory values are authoritative. Returns null when storage exists but
+        // cannot be read — the caller then skips the write rather than risk persisting
+        // a truncated map (fail closed: history stays stale, never falsely advanced).
+        async function readAuthoritative() {
+            if (!hasGM()) return { globalTs, perCourse, stored: false };
+            try {
+                const g = await GM.getValue(LAST_DOWNLOAD_AT_KEY, 0);
+                const m = await GM.getValue(COURSE_DOWNLOADS_KEY, {});
+                return { globalTs: g, perCourse: m, stored: true };
+            } catch (_) { return null; }
+        }
+
+        // Loads persisted state from GM storage. Safe when GM is missing/broken —
+        // falls back to defaults (global=0, perCourse={}) in every failure path.
+        async function load() {
+            globalTs = 0;
+            perCourse = {};
+            if (!hasGM()) return;
+            try {
+                const g = await GM.getValue(LAST_DOWNLOAD_AT_KEY, 0);
+                globalTs = isPositiveFiniteNumber(g) ? g : 0;
+            } catch (_) { globalTs = 0; }
+            try {
+                const m = await GM.getValue(COURSE_DOWNLOADS_KEY, {});
+                perCourse = pruneHistory(m, HISTORY_MAX_ENTRIES);
+            } catch (_) { perCourse = {}; }
+        }
+
+        // Records one finished batch as a single atomic operation: acquire the history
+        // lock, re-read storage, merge only this batch's rows, persist, then adopt the
+        // merged result as the new in-memory state. Never throws — a storage failure
+        // leaves history untouched rather than aborting the caller's success path.
+        async function recordBatch(completedRowNames, startedAt, advanceGlobal) {
+            try {
+                await withHistoryLock(async () => {
+                    const current = await readAuthoritative();
+                    if (!current) return;
+                    const merged = mergePersistedHistory(current, {
+                        completedRowNames, startedAt, advanceGlobal, cap: HISTORY_MAX_ENTRIES,
+                    });
+                    if (current.stored) {
+                        // Per-course map first: if the second write fails, the global stays
+                        // behind, which only ever under-reports "synced" — never over-reports.
+                        try { await GM.setValue(COURSE_DOWNLOADS_KEY, merged.perCourse); } catch (_) {}
+                        try { await GM.setValue(LAST_DOWNLOAD_AT_KEY, merged.globalTs); } catch (_) {}
+                    }
+                    globalTs = merged.globalTs;
+                    perCourse = merged.perCourse;
+                });
+            } catch (_) {}
+        }
+
+        // Resets both keys back to their defaults (0 / {}) — no new GM grant needed,
+        // reuses the existing GM.setValue grant. Held under the same lock as
+        // recordBatch so a concurrent batch can never half-resurrect the cleared state.
+        async function reset() {
+            try {
+                await withHistoryLock(async () => {
+                    if (hasGM()) {
+                        try { await GM.setValue(COURSE_DOWNLOADS_KEY, {}); } catch (_) {}
+                        try { await GM.setValue(LAST_DOWNLOAD_AT_KEY, 0); } catch (_) {}
+                    }
+                    globalTs = 0;
+                    perCourse = {};
+                });
+            } catch (_) {}
+        }
+
+        function getGlobal() { return globalTs; }
+        function getPerCourseMap() { return perCourse; }
+        function getBaseline(rowName) { return baselineFor(rowName, perCourse, globalTs); }
+        function trackedCourseCount() { return Object.keys(perCourse).length; }
+
+        return {
+            summarizeCourseCompletion, baselineFor, isUpdatedSince, formatLocalDateTime, pruneHistory,
+            mergePersistedHistory,
+            load, recordBatch, reset,
+            getGlobal, getPerCourseMap, getBaseline, trackedCourseCount,
+        };
+    })();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 11. Orchestrator (queue + retry + checkpoint)
     // ─────────────────────────────────────────────────────────────────────────
 
     const orchestrator = (() => {
@@ -920,7 +1141,7 @@
     })();
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 11. UI
+    // 12. UI
     // ─────────────────────────────────────────────────────────────────────────
 
     const ui = (() => {
@@ -974,6 +1195,7 @@
                 user-select: none;
             }
             #ldc-bar .ldc-info:hover { opacity: 1; }
+            #ldc-bar .ldc-last-download { font-size: 12px; opacity: 0.9; cursor: help; }
 
             .ldc-row-checkbox {
                 width: 18px; height: 18px;
@@ -986,6 +1208,13 @@
                 display: inline-flex;
                 align-items: center;
                 margin-right: 4px;
+                user-select: none;
+                -webkit-user-select: none;
+            }
+            .ldc-updated-badge {
+                margin-left: 2px;
+                font-size: 13px;
+                cursor: help;
                 user-select: none;
                 -webkit-user-select: none;
             }
@@ -1187,7 +1416,7 @@
         }
 
         // Control bar
-        let bar, btnFolder, btnSelectAll, btnClear, btnDownload, btnCancel, btnShowProgress, infoBadge, lblFolder, lblCount, selSort;
+        let bar, btnFolder, btnSelectAll, btnClear, btnSelectUpdated, btnDownload, btnCancel, btnShowProgress, infoBadge, lblFolder, lblCount, lblLastDownload, selSort;
 
         function buildBar() {
             bar = el('div', { id: 'ldc-bar' });
@@ -1195,12 +1424,14 @@
             lblFolder = el('span', { class: 'ldc-folder', text: '(no folder chosen)' });
             btnSelectAll = el('button', { text: '☑ Select all visible' });
             btnClear = el('button', { text: '✗ Clear selection' });
+            btnSelectUpdated = el('button', { text: '🆕 Select updated', disabled: true });
             selSort = el('select', { class: 'ldc-sort', 'aria-label': 'Sort courses within each category by last-updated date', title: 'Sort courses within each category by last-updated date' }, [
                 el('option', { value: 'none', text: '⇅ Sort: Default' }),
                 el('option', { value: 'date-desc', text: '⇅ Sort: Updated ↓ (newest first)' }),
                 el('option', { value: 'date-asc', text: '⇅ Sort: Updated ↑ (oldest first)' }),
             ]);
             const spacer = el('span', { class: 'ldc-spacer' });
+            lblLastDownload = el('span', { class: 'ldc-last-download', text: '⏱ Last download: —' });
             lblCount = el('span', { class: 'ldc-status', text: '0 selected' });
             btnDownload = el('button', { class: 'ldc-primary', text: '⬇ Download selected', disabled: true });
             btnCancel = el('button', { text: '⏹ Cancel', style: { display: 'none' } });
@@ -1210,7 +1441,7 @@
                 text: 'ℹ️',
                 title: `Author: ${SCRIPT_AUTHOR}\nVersion: ${SCRIPT_VERSION}`,
             });
-            bar.append(btnFolder, lblFolder, btnSelectAll, btnClear, selSort, spacer, lblCount, btnDownload, btnCancel, btnShowProgress, infoBadge);
+            bar.append(btnFolder, lblFolder, btnSelectAll, btnClear, btnSelectUpdated, selSort, spacer, lblLastDownload, lblCount, btnDownload, btnCancel, btnShowProgress, infoBadge);
             return bar;
         }
 
@@ -1218,6 +1449,40 @@
             const n = selection.size();
             lblCount.textContent = `${n} selected`;
             btnDownload.disabled = n === 0;
+        }
+
+        // Reference to the downloadHistory module, injected via setHistory(). Kept as a
+        // plain reference (mirrors how setLookup() plumbs the course lookup Map into
+        // this module) so the UI layer can read timestamps/baselines without owning them.
+        // Named historyApi (not `history`) to avoid shadowing window.history.
+        let historyApi = null;
+        function setHistory(h) { historyApi = h; }
+
+        function updateHistoryUI() {
+            if (!lblLastDownload) return;
+            const g = historyApi ? historyApi.getGlobal() : 0;
+            const label = historyApi ? historyApi.formatLocalDateTime(g) : '—';
+            lblLastDownload.textContent = `⏱ Last download: ${label}`;
+            const count = historyApi ? historyApi.trackedCourseCount() : 0;
+            const fullTime = g > 0 ? new Date(g).toString() : 'never';
+            lblLastDownload.title = `Full local time: ${fullTime}\nTracked courses: ${count}\n`
+                + `The global "last download" time only advances after a completely successful batch `
+                + `(no failures, not paused, not cancelled).`;
+            updateSelectUpdatedButton();
+        }
+
+        function updateSelectUpdatedButton() {
+            if (!btnSelectUpdated) return;
+            const hasBaseline = !!historyApi && (historyApi.getGlobal() > 0 || historyApi.trackedCourseCount() > 0);
+            const hasDates = hasAnyDateMetadata();
+            btnSelectUpdated.disabled = !(hasBaseline && hasDates);
+            if (!hasDates) {
+                btnSelectUpdated.title = '⚠️ No date metadata available on any course; select-updated disabled';
+            } else if (!hasBaseline) {
+                btnSelectUpdated.title = 'No last-download history yet — download at least one course, then this becomes available';
+            } else {
+                btnSelectUpdated.title = 'Select all currently visible courses updated since your last download';
+            }
         }
 
         async function refreshFolderLabel() {
@@ -1364,6 +1629,7 @@
             ['click', 'mousedown', 'keydown'].forEach((evt) => {
                 wrap.addEventListener(evt, (e) => e.stopPropagation());
             });
+            applyBadgeForRow(wrap, cls.name);
             // The toggle <div role="button"> is itself flex, and its first child is an
             // inner `<div class="flex items-center">` containing the chevron + title.
             // Inserting our checkbox into THAT inner flex (before the chevron) keeps
@@ -1376,6 +1642,37 @@
             } else {
                 toggleEl.insertBefore(wrap, toggleEl.firstChild);
             }
+        }
+
+        // Adds/removes the "🆕" updated-since-last-download badge on a row's wrap
+        // element. baseline = perCourse[rowName] ?? global (via historyApi.getBaseline);
+        // with no baseline at all (0), nothing is ever considered updated, so no
+        // badges show up on first use before any download history exists.
+        function applyBadgeForRow(wrap, rowName) {
+            if (!wrap) return;
+            const existing = wrap.querySelector('.ldc-updated-badge');
+            if (existing) existing.remove();
+            if (!historyApi || !lookup) return;
+            const node = lookup.get(rowName);
+            if (!node) return;
+            const baseline = historyApi.getBaseline(rowName);
+            if (!historyApi.isUpdatedSince(node.lastModified, baseline)) return;
+            const badge = el('span', {
+                class: 'ldc-updated-badge',
+                text: '🆕',
+                title: `Updated ${historyApi.formatLocalDateTime(node.lastModified)} — after your last download (${historyApi.formatLocalDateTime(baseline)})`,
+            });
+            wrap.appendChild(badge);
+        }
+
+        // Re-evaluates the updated-since badge on every currently-injected row.
+        // Called after a successful history write (post-download) or a history reset.
+        function refreshBadges() {
+            document.querySelectorAll('.ldc-row-wrap').forEach((wrap) => {
+                const cb = wrap.querySelector('input.ldc-row-checkbox');
+                if (!cb) return;
+                applyBadgeForRow(wrap, cb.getAttribute('data-ldc-row-id'));
+            });
         }
 
         function refreshAllCheckboxes() {
@@ -1672,10 +1969,12 @@
             injectStyle, buildBar, updateBar, refreshFolderLabel, setLookup, observeRows, disposeRows, refreshAllCheckboxes, clearAnchor,
             buildPanel, showPanel, renderPanel: scheduleRender, showPreflight, showToast,
             getSortMode, setSortMode, applySortIfNeeded, hasAnyDateMetadata,
+            setHistory, updateHistoryUI, updateSelectUpdatedButton, refreshBadges,
             get bar() { return bar; },
             get btnFolder() { return btnFolder; },
             get btnSelectAll() { return btnSelectAll; },
             get btnClear() { return btnClear; },
+            get btnSelectUpdated() { return btnSelectUpdated; },
             get btnDownload() { return btnDownload; },
             get btnCancel() { return btnCancel; },
             get btnShowProgress() { return btnShowProgress; },
@@ -1685,7 +1984,7 @@
     })();
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 12. Wiring / boot
+    // 13. Wiring / boot
     // ─────────────────────────────────────────────────────────────────────────
 
     let lookup = null;
@@ -1731,6 +2030,30 @@
         ui.clearAnchor();
     }
 
+    // Selects only currently-visible rows (offsetParent !== null) whose course was
+    // updated since the applicable baseline (per-course, else global). Adds to the
+    // existing selection rather than replacing it, and clears the shift-range anchor
+    // like the other toolbar selection actions.
+    function onSelectUpdated() {
+        if (!lookup) { ui.showToast('Course list not loaded yet.', 'warn'); return; }
+        const cbs = document.querySelectorAll('input.ldc-row-checkbox');
+        let matched = 0;
+        cbs.forEach((cb) => {
+            if (cb.offsetParent === null) return; // not currently visible
+            const rowName = cb.getAttribute('data-ldc-row-id');
+            const node = lookup.get(rowName);
+            if (!node) return;
+            const baseline = downloadHistory.getBaseline(rowName);
+            if (!downloadHistory.isUpdatedSince(node.lastModified, baseline)) return;
+            matched++;
+            selection.add(rowName);
+            cb.checked = true;
+        });
+        ui.clearAnchor();
+        if (matched === 0) ui.showToast('No visible courses updated since your last download.', 'info');
+        else ui.showToast(`Selected ${matched} updated course${matched === 1 ? '' : 's'}.`);
+    }
+
     async function onDownload() {
         if (orchestrator.isRunning) return;
         const ids = selection.ids();
@@ -1772,6 +2095,14 @@
         try {
             await orchestrator.runQueue(tasks, root);
             const s = orchestrator.state;
+            const { completedRowNames, allComplete } = downloadHistory.summarizeCourseCompletion(s.tasks);
+            const advanceGlobal = allComplete && s.failed === 0 && s.paused === false;
+            // One atomic, cross-tab-safe read-modify-write for the whole batch.
+            await downloadHistory.recordBatch(completedRowNames, s.startedAt, advanceGlobal);
+            // Refresh the toolbar label/button and any already-injected row badges,
+            // regardless of whether anything actually advanced (cheap and idempotent).
+            ui.updateHistoryUI();
+            ui.refreshBadges();
             if (s.paused) {
                 ui.showToast(`Download paused: ${s.pauseReason}`, 'error', 8000);
             } else if (s.failed > 0) {
@@ -1814,6 +2145,7 @@
         ui.btnFolder.addEventListener('click', onChooseFolder);
         ui.btnSelectAll.addEventListener('click', onSelectAllVisible);
         ui.btnClear.addEventListener('click', onClearSelection);
+        ui.btnSelectUpdated.addEventListener('click', onSelectUpdated);
         ui.btnDownload.addEventListener('click', onDownload);
         ui.btnCancel.addEventListener('click', onCancel);
         ui.btnShowProgress.addEventListener('click', () => {
@@ -1863,6 +2195,14 @@
                 ui.showToast(`Token expires in ${left}s (${new Date(exp * 1000).toLocaleTimeString()}).`);
             }
         });
+        GM_registerMenuCommand('LDC: Reset last-download history', async () => {
+            const ok = confirm('Reset last-download history?\n\nThis clears the global "last download" timestamp and all per-course timestamps. Updated-course badges will disappear until you download again.');
+            if (!ok) return;
+            await downloadHistory.reset();
+            ui.updateHistoryUI();
+            ui.refreshBadges();
+            ui.showToast('Last-download history cleared.');
+        });
     }
 
     async function boot() {
@@ -1870,11 +2210,17 @@
         setupBar();
         setupPanel();
         registerMenuCommands();
+        ui.setHistory(downloadHistory);
         await ui.refreshFolderLabel();
 
         // Restore persisted sort mode (UI only; engine waits until lookup loads).
         const savedSort = await loadSortMode();
         if (ui.selSort) ui.selSort.value = savedSort;
+
+        // Load last-download history before the initial observeRows() pass, so the
+        // very first badge injection sees the correct baseline.
+        await downloadHistory.load();
+        ui.updateHistoryUI();
 
         // Wait for SPA to render the results container, then load lookup and start observing.
         try {
@@ -1906,6 +2252,8 @@
             }
             ui.setSortMode(savedSort);
         }
+        // Course lookup is now settled; recompute select-updated button availability.
+        ui.updateSelectUpdatedButton();
 
         ui.observeRows();
     }
@@ -1922,7 +2270,7 @@
     try {
         unsafeWindow.__ldc = Object.freeze({
             tokenInterceptor, courseParser, pathSanitizer, treeIndex,
-            selection, orchestrator, fsaWriter, api,
+            selection, orchestrator, fsaWriter, api, downloadHistory,
             getLookup: () => lookup,
         });
     } catch (_) {}

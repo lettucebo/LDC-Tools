@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-30
+
+### Added
+- **Last-download tracking.** A new `⏱ Last download: <date/time>` toolbar
+  label shows when the last fully successful batch started — the
+  timestamp is only recorded after that batch completes with **no
+  failures, not paused, not cancelled**.
+  Independently, every course whose own files all finished as `done` or
+  `skipped` gets its **per-course timestamp** updated, even if other
+  courses in the same batch failed. Files skipped because an identical-size
+  copy already exists count as success for this purpose.
+- **`🆕` updated-since-last-download badge** next to each course row, shown
+  when that course has files updated (by `lastModified`) after the
+  applicable baseline — the course's own last-download timestamp if it has
+  one, otherwise the global last-download timestamp. A course without its
+  own timestamp yet still gets a baseline this way rather than showing no
+  baseline at all. On first use, before any download has completed, there
+  is no baseline and no badges are shown.
+- **`🆕 Select updated` toolbar button** selects every currently *visible*
+  course row carrying the badge (collapsed/hidden rows are skipped) and
+  **adds them to the existing selection** rather than replacing it. Stays
+  disabled until there is at least one tracked timestamp and the course
+  list has date metadata.
+- **`LDC: Reset last-download history`** Tampermonkey menu command clears
+  the global and all per-course timestamps (after a confirmation dialog),
+  making every `🆕` badge disappear until the next download.
+
+### Notes
+- Last-download history is stored via `GM.setValue` / `GM.getValue`, which
+  is local to the browser/profile running the script — it is **not** tied
+  to the chosen destination folder. See the README's "Last-download
+  tracking" section for details.
+- History is written back as one atomic merge guarded by a dedicated
+  `ldc-download-history` Web Lock: the stored values are re-read inside the
+  lock and only the finished batch's courses are advanced (`Math.max`), so
+  two tabs downloading at the same time cannot erase or roll back each
+  other's timestamps, and a reset in one tab is not resurrected by the
+  other.
+- LDC's course dates are frequently day-granular, so a course updated later
+  on the same calendar day as your download may not be distinguishable
+  until it receives a newer date. See the README's "Known limitations".
+
 ## [0.8.5] — 2026-07-04
 
 ### Changed
@@ -246,7 +288,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     expiry pre-detection, and handling for HTTP 429 (rate limit) and
     401 (token expired).
 
-[Unreleased]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.8.5...HEAD
+[Unreleased]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/lettucebo/TampermonkeyScripts/compare/v0.8.5...v0.9.0
 [0.8.5]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.2...v0.8.5
 [0.8.2]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.1...ldc-batch-download-v0.8.2
 [0.8.1]: https://github.com/lettucebo/TampermonkeyScripts/compare/ldc-batch-download-v0.8.0...ldc-batch-download-v0.8.1
