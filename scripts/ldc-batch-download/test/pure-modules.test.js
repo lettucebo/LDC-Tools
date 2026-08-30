@@ -120,6 +120,65 @@ const pathSanitizer = (() => {
     return { sanitizeSegment, shortHash };
 })();
 
+// downloadHistory — pure helpers only (hand-ported; the stateful load/save/reset
+// methods in the userscript wrap GM.getValue/GM.setValue and can't run under Node).
+// Keep this in sync with the userscript's downloadHistory module.
+const HISTORY_MAX_ENTRIES = 3000;
+const downloadHistory = (() => {
+    function isPositiveFiniteNumber(v) {
+        return typeof v === 'number' && Number.isFinite(v) && v > 0;
+    }
+    function isValidCap(v) {
+        return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+    }
+    function summarizeCourseCompletion(tasks) {
+        const byRow = new Map();
+        if (Array.isArray(tasks)) {
+            for (const t of tasks) {
+                if (!t || typeof t.rowName !== 'string' || !t.rowName) continue;
+                if (!byRow.has(t.rowName)) byRow.set(t.rowName, []);
+                byRow.get(t.rowName).push(t);
+            }
+        }
+        const completedRowNames = [];
+        for (const [rowName, rowTasks] of byRow) {
+            if (rowTasks.every((t) => t.status === 'done' || t.status === 'skipped')) {
+                completedRowNames.push(rowName);
+            }
+        }
+        const allComplete = Array.isArray(tasks) && tasks.length > 0
+            && tasks.every((t) => t && (t.status === 'done' || t.status === 'skipped'));
+        return { completedRowNames, allComplete };
+    }
+    function baselineFor(rowName, map, globalTs) {
+        const perCourseTs = map && typeof map === 'object' ? map[rowName] : undefined;
+        if (isPositiveFiniteNumber(perCourseTs)) return perCourseTs;
+        if (isPositiveFiniteNumber(globalTs)) return globalTs;
+        return 0;
+    }
+    function isUpdatedSince(lastModified, baseline) {
+        return isPositiveFiniteNumber(lastModified) && isPositiveFiniteNumber(baseline) && lastModified > baseline;
+    }
+    function formatLocalDateTime(ms) {
+        if (!isPositiveFiniteNumber(ms)) return '—';
+        const d = new Date(ms);
+        if (Number.isNaN(d.getTime())) return '—';
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+    function pruneHistory(map, cap) {
+        const c = isValidCap(cap) ? Math.floor(cap) : HISTORY_MAX_ENTRIES;
+        if (!map || typeof map !== 'object' || Array.isArray(map)) return {};
+        const entries = Object.entries(map).filter(([k, v]) => typeof k === 'string' && k && isPositiveFiniteNumber(v));
+        entries.sort((x, y) => y[1] - x[1]); // newest (largest timestamp) first
+        const kept = entries.slice(0, Math.max(0, c));
+        const out = {};
+        for (const [k, v] of kept) out[k] = v;
+        return out;
+    }
+    return { summarizeCourseCompletion, baselineFor, isUpdatedSince, formatLocalDateTime, pruneHistory };
+})();
+
 let pass = 0, fail = 0;
 function eq(actual, expected, label) {
     const a = JSON.stringify(actual);
@@ -359,6 +418,68 @@ function makeComparator(mode) {
     eq(asc, ['A', 'D', 'B', 'F', 'C', 'E'],
         'comparator asc: oldest first; ties keep original order; missing dates pinned to tail (stable)');
 })();
+
+// ── downloadHistory (pure helpers) ──────────────────────────────────────────
+// summarizeCourseCompletion
+eq(downloadHistory.summarizeCourseCompletion([]), { completedRowNames: [], allComplete: false },
+    'summarizeCourseCompletion: empty tasks → nothing complete');
+eq(downloadHistory.summarizeCourseCompletion([
+    { rowName: 'A', status: 'done' },
+    { rowName: 'A', status: 'skipped' },
+    { rowName: 'B', status: 'done' },
+    { rowName: 'B', status: 'pending' }, // never ran — batch was cancelled mid-course
+]), { completedRowNames: ['A'], allComplete: false },
+    'summarizeCourseCompletion: course B has a pending (cancelled) task → excluded; A fully done/skipped → included');
+eq(downloadHistory.summarizeCourseCompletion([
+    { rowName: 'A', status: 'done' },
+    { rowName: 'B', status: 'skipped' },
+]), { completedRowNames: ['A', 'B'], allComplete: true },
+    'summarizeCourseCompletion: all tasks done/skipped across every row → allComplete true');
+eq(downloadHistory.summarizeCourseCompletion([
+    { rowName: 'A', status: 'done' },
+    { rowName: 'A', status: 'failed' },
+]), { completedRowNames: [], allComplete: false },
+    'summarizeCourseCompletion: a failed task excludes its course and blocks allComplete');
+eq(downloadHistory.summarizeCourseCompletion(null), { completedRowNames: [], allComplete: false },
+    'summarizeCourseCompletion: non-array input → nothing complete');
+
+// baselineFor
+eq(downloadHistory.baselineFor('A', { A: 1000 }, 500), 1000, 'baselineFor: valid per-course timestamp wins over global');
+eq(downloadHistory.baselineFor('B', { A: 1000 }, 500), 500, 'baselineFor: missing per-course entry falls back to global');
+eq(downloadHistory.baselineFor('A', { A: 0 }, 500), 500, 'baselineFor: per-course zero is invalid, falls back to global');
+eq(downloadHistory.baselineFor('A', { A: -5 }, 500), 500, 'baselineFor: per-course negative is invalid, falls back to global');
+eq(downloadHistory.baselineFor('A', {}, 0), 0, 'baselineFor: neither per-course nor global valid → 0');
+eq(downloadHistory.baselineFor('A', null, 500), 500, 'baselineFor: null map falls back to global');
+
+// isUpdatedSince
+eq(downloadHistory.isUpdatedSince(0, 100), false, 'isUpdatedSince: zero lastModified → false');
+eq(downloadHistory.isUpdatedSince(100, 100), false, 'isUpdatedSince: equal timestamps → false (not strictly newer)');
+eq(downloadHistory.isUpdatedSince(101, 100), true, 'isUpdatedSince: strictly newer → true');
+eq(downloadHistory.isUpdatedSince(150, 0), false, 'isUpdatedSince: zero baseline (no history yet) → false');
+eq(downloadHistory.isUpdatedSince(-5, 100), false, 'isUpdatedSince: negative lastModified → false');
+
+// formatLocalDateTime — deterministic via a locally constructed Date (uses the
+// test runner's own local timezone consistently for both input and expectation).
+const sampleLocal = new Date(2024, 0, 5, 9, 3, 0); // 2024-01-05 09:03 local
+eq(downloadHistory.formatLocalDateTime(sampleLocal.getTime()), '2024-01-05 09:03', 'formatLocalDateTime: pads month/day/hour/minute');
+const sampleLocal2 = new Date(2024, 10, 21, 23, 59, 0); // 2024-11-21 23:59 local
+eq(downloadHistory.formatLocalDateTime(sampleLocal2.getTime()), '2024-11-21 23:59', 'formatLocalDateTime: no padding needed case');
+eq(downloadHistory.formatLocalDateTime(0), '—', 'formatLocalDateTime: zero → em dash');
+eq(downloadHistory.formatLocalDateTime(-100), '—', 'formatLocalDateTime: negative → em dash');
+eq(downloadHistory.formatLocalDateTime(NaN), '—', 'formatLocalDateTime: NaN → em dash');
+eq(downloadHistory.formatLocalDateTime('not-a-number'), '—', 'formatLocalDateTime: non-number → em dash');
+
+// pruneHistory
+eq(downloadHistory.pruneHistory(null, 10), {}, 'pruneHistory: null map → empty object');
+eq(downloadHistory.pruneHistory('x', 10), {}, 'pruneHistory: non-object map → empty object');
+eq(downloadHistory.pruneHistory([1, 2, 3], 10), {}, 'pruneHistory: array map → empty object');
+eq(downloadHistory.pruneHistory({ a: 100, b: -5, c: 'x', d: 0, e: 200 }, 10), { e: 200, a: 100 },
+    'pruneHistory: drops non-positive/invalid entries, keeps valid ones (newest first)');
+eq(downloadHistory.pruneHistory({ a: 100, b: 300, c: 200 }, 2), { b: 300, c: 200 },
+    'pruneHistory: caps at N, keeping the newest timestamps and dropping the oldest');
+eq(downloadHistory.pruneHistory({ a: 100, b: 300, c: 200 }, 0), {}, 'pruneHistory: cap of zero retains no entries');
+eq(downloadHistory.pruneHistory({ a: 1, b: 2 }), { b: 2, a: 1 }, 'pruneHistory: default cap (3000) keeps entries when under the limit');
+eq(downloadHistory.pruneHistory({ a: 5 }, 'nope'), { a: 5 }, 'pruneHistory: invalid cap parameter falls back to default 3000');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
