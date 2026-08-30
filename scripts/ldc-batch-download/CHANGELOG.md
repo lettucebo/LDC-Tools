@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Last-download tracking.** A new `⏱ Last download: <date/time>` toolbar
-  label shows when the last fully successful batch finished — it only
-  advances after a batch with **no failures, not paused, not cancelled**.
+  label shows when the last fully successful batch started — the
+  timestamp is only recorded after that batch completes with **no
+  failures, not paused, not cancelled**.
   Independently, every course whose own files all finished as `done` or
   `skipped` gets its **per-course timestamp** updated, even if other
   courses in the same batch failed. Files skipped because an identical-size

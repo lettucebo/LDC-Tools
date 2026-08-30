@@ -122,6 +122,10 @@ To trigger a check immediately:
    - Files that already exist with the same size are skipped (so you can
      re-run the same batch)
    - Failed files are displayed in the panel and you can "copy error list"
+5. **On later visits**: check the `⏱ Last download` label in the toolbar,
+   then click `🆕 Select updated` to add every visible course updated
+   since that baseline to your current selection (see
+   [Last-download tracking](#last-download-tracking) below for details)
 
 ## Tampermonkey menu commands
 
@@ -159,11 +163,12 @@ The toolbar remembers when you last successfully downloaded, so you can spot
 which courses have new content without re-checking every row by hand.
 
 - **`⏱ Last download: <date/time>`** in the toolbar shows when the last
-  *fully successful* batch finished. It only advances after a batch that
-  completes with **no failures, not paused, and not cancelled** — a batch
-  that ends with any failed file, or one you cancel/pause partway through,
-  never moves this label. Hover it for the full local timestamp and how many
-  courses have their own tracked timestamp.
+  *fully successful* batch **started**. The timestamp is only recorded
+  after that batch completes with **no failures, not paused, and not
+  cancelled** — a batch that ends with any failed file, or one you
+  cancel/pause partway through, never moves this label. Hover it for the
+  full local timestamp and how many courses have their own tracked
+  timestamp.
 - **Per-course timestamps advance independently.** Even inside a batch that
   has failures elsewhere, every course whose own files *all* finished as
   `done` or `skipped` gets its per-course timestamp updated — one failing
