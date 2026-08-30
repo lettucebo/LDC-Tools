@@ -217,6 +217,7 @@ to your chosen destination folder. In practice:
 | 401 token expired | Pause the whole batch and prompt to refresh the page |
 | Tab closed mid-download | Whole batch aborted; rerunning skips already-completed files |
 | Multiple tabs open at once | Mutually excluded via `navigator.locks`; the second tab is blocked |
+| History written from two tabs | Each batch's result is merged into the stored history under a separate `ldc-download-history` Web Lock (storage is re-read inside the lock), so timestamps only ever move forward and one tab cannot erase the other's |
 | Global `⏱ Last download` label | Advances only after a batch that finishes with no failures, not paused, not cancelled |
 | Per-course last-download timestamp | Advances independently for any course whose own files all finished `done`/`skipped`, even if other courses in the batch failed |
 | Skipped (same-size) file, for tracking purposes | Counts as success toward the course's/batch's completion |
@@ -233,6 +234,11 @@ to your chosen destination folder. In practice:
 - ❌ Last-download history is local to the browser/profile/machine running
   the script, not tied to the destination folder — see
   [Storage limitation](#storage-limitation) above
+- ⚠️ LDC's course dates are often **day-granular** (a date with no time,
+  which is read as local midnight), while the last-download timestamp is a
+  real wall-clock time. A course updated *later on the same calendar day*
+  as your download therefore usually cannot be distinguished from one you
+  already have, and stays un-badged until it gets a newer date.
 
 ## Development
 
@@ -259,6 +265,7 @@ internally:
 | `fsaWriter` | File System Access API wrapper, persists handle in IndexedDB |
 | `selection` | Selection state (keyed by stable ID) |
 | `orchestrator` | Concurrent queue, retry, skip-if-exists, multi-tab `navigator.locks` |
+| `downloadHistory` | Last-download timestamps (global + per course): `GM` storage, monotonic cross-tab merge under `navigator.locks`, `🆕` baseline helpers |
 | `ui` | Toolbar, checkbox injection, progress panel, preflight dialog |
 
 Reverse-engineered LDC API:

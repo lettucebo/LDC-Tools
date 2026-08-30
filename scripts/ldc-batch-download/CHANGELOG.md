@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is local to the browser/profile running the script — it is **not** tied
   to the chosen destination folder. See the README's "Last-download
   tracking" section for details.
+- History is written back as one atomic merge guarded by a dedicated
+  `ldc-download-history` Web Lock: the stored values are re-read inside the
+  lock and only the finished batch's courses are advanced (`Math.max`), so
+  two tabs downloading at the same time cannot erase or roll back each
+  other's timestamps, and a reset in one tab is not resurrected by the
+  other.
+- LDC's course dates are frequently day-granular, so a course updated later
+  on the same calendar day as your download may not be distinguishable
+  until it receives a newer date. See the README's "Known limitations".
 
 ## [0.8.5] — 2026-07-04
 

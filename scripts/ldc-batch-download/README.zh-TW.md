@@ -186,6 +186,7 @@
 | 401 token 過期 | 暫停整批，提示重新整理頁面 |
 | 下載中關掉分頁 | 整批中止；下次重跑會自動跳過已完成檔案 |
 | 多分頁同時開 | `navigator.locks` 互斥，第二個分頁會被擋下 |
+| 兩個分頁各自寫入紀錄 | 每批次的結果都在獨立的 `ldc-download-history` Web Lock 內合併（鎖內重新讀取儲存值），時間戳只進不退，分頁之間不會互相覆蓋或清掉對方的紀錄 |
 | 全域 `⏱ Last download` 標籤 | 只有在批次全部完成、無失敗、未暫停、未取消時才會前進 |
 | 每課程上次下載時間戳 | 只要該課程自己的檔案全部完成 `done`/`skipped` 就會獨立前進，即使同批次其他課程失敗 |
 | 跳過的同大小檔案（就追蹤而言） | 視為成功，計入該課程／批次的完成度 |
@@ -198,6 +199,9 @@
 - ❌ 不支援自動展開所有類別「下載全站」（避免誤操作）
 - ❌ 上次下載紀錄僅限於執行腳本的瀏覽器/profile/機器，與目的地資料夾無關 —
   詳見上方[儲存限制](#儲存限制)
+- ⚠️ LDC 提供的課程日期多半只有**日期精度**（沒有時間，會被解讀為當地午夜），
+  而上次下載時間戳是實際的時鐘時間。因此課程若在你下載的**同一天稍晚**才更新，
+  通常無法與已下載的版本區分，要等到出現更新的日期才會標上 🆕。
 
 ## 開發
 
@@ -223,6 +227,7 @@ node --check scripts\ldc-batch-download\ldc-batch-download.user.js
 | `fsaWriter` | File System Access API 包裝，IndexedDB 持久化 handle |
 | `selection` | 選取狀態（keyed by 穩定 ID） |
 | `orchestrator` | 並行 queue、retry、跳過已存在、`navigator.locks` 多分頁鎖 |
+| `downloadHistory` | 上次下載時間戳（全域 + 每課程）：`GM` 儲存、以 `navigator.locks` 做跨分頁單調合併、🆕 基準判斷 |
 | `ui` | 工具列、checkbox 注入、進度面板、preflight 對話框 |
 
 逆向工程出的 LDC API：

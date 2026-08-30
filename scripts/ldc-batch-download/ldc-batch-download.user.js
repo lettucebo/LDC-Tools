@@ -32,6 +32,7 @@
 
     const APP_ID = 'ldc-batch-downloader';
     const LOCK_NAME = 'ldc-batch-download';
+    const HISTORY_LOCK_NAME = 'ldc-download-history';
     const IDB_NAME = 'ldc-batch-downloader';
     const IDB_STORE = 'state';
     const IDB_KEY_ROOT_HANDLE = 'rootDirHandle';
@@ -44,6 +45,7 @@
     const SCRIPT_VERSION = (typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version) || '0.9.0';
     const SCRIPT_AUTHOR = 'Money Yu';
     const HISTORY_MAX_ENTRIES = 3000;
+    const HISTORY_LOCK_TIMEOUT_MS = 10000;
     const LAST_DOWNLOAD_AT_KEY = 'ldc.lastDownloadAt';
     const COURSE_DOWNLOADS_KEY = 'ldc.courseDownloads';
 
@@ -782,8 +784,75 @@
             return out;
         }
 
+        // Merges one finished batch into the persisted state. `persisted` must be the
+        // state re-read from storage inside the history lock — never the in-memory
+        // snapshot taken at boot, otherwise another tab's reset or newer writes would
+        // be resurrected/clobbered. Only `batch.completedRowNames` are touched; every
+        // other persisted key is carried over untouched, and every write is monotonic
+        // (Math.max), so a slow tab finishing an older batch can never regress history.
+        // The global timestamp advances only when `batch.advanceGlobal` is true.
+        function mergePersistedHistory(persisted, batch) {
+            const p = persisted && typeof persisted === 'object' ? persisted : {};
+            const b = batch && typeof batch === 'object' ? batch : {};
+            const cap = isValidCap(b.cap) ? Math.floor(b.cap) : HISTORY_MAX_ENTRIES;
+            const baseGlobal = isPositiveFiniteNumber(p.globalTs) ? p.globalTs : 0;
+            const merged = pruneHistory(p.perCourse, cap);
+            const ts = isPositiveFiniteNumber(b.startedAt) ? b.startedAt : 0;
+            if (ts > 0 && Array.isArray(b.completedRowNames)) {
+                for (const rowName of b.completedRowNames) {
+                    if (typeof rowName !== 'string' || !rowName) continue;
+                    const existing = merged[rowName];
+                    merged[rowName] = isPositiveFiniteNumber(existing) ? Math.max(existing, ts) : ts;
+                }
+            }
+            return {
+                globalTs: (b.advanceGlobal === true && ts > 0) ? Math.max(baseGlobal, ts) : baseGlobal,
+                perCourse: pruneHistory(merged, cap),
+            };
+        }
+
         function hasGM() {
             return typeof GM !== 'undefined' && GM && typeof GM.getValue === 'function' && typeof GM.setValue === 'function';
+        }
+
+        // Serializes history read-modify-write cycles across tabs. Web Locks are
+        // origin-scoped, so two tabs finishing batches at the same moment take turns
+        // instead of overwriting each other. Degrades to an unlocked run when the Lock
+        // Manager is missing or refuses the request (single-tab behaviour is identical).
+        // The wait is bounded: a wedged holder must never leave the caller — and with
+        // it the post-download UI — hanging. On timeout the merge still re-reads
+        // storage first, so only the cross-tab atomicity is lost.
+        async function withHistoryLock(fn) {
+            const locks = (typeof navigator !== 'undefined' && navigator.locks
+                && typeof navigator.locks.request === 'function') ? navigator.locks : null;
+            if (!locks) return fn();
+            let opts = {};
+            try {
+                if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+                    opts = { signal: AbortSignal.timeout(HISTORY_LOCK_TIMEOUT_MS) };
+                }
+            } catch (_) { opts = {}; }
+            let entered = false;
+            try {
+                return await locks.request(HISTORY_LOCK_NAME, opts, async () => { entered = true; return fn(); });
+            } catch (e) {
+                if (entered) throw e; // the callback itself failed — never run it twice
+                return fn();
+            }
+        }
+
+        // Reads the authoritative state for a merge. With GM storage present that is
+        // the freshly re-read persisted pair; without it there is no shared state, so
+        // the in-memory values are authoritative. Returns null when storage exists but
+        // cannot be read — the caller then skips the write rather than risk persisting
+        // a truncated map (fail closed: history stays stale, never falsely advanced).
+        async function readAuthoritative() {
+            if (!hasGM()) return { globalTs, perCourse, stored: false };
+            try {
+                const g = await GM.getValue(LAST_DOWNLOAD_AT_KEY, 0);
+                const m = await GM.getValue(COURSE_DOWNLOADS_KEY, {});
+                return { globalTs: g, perCourse: m, stored: true };
+            } catch (_) { return null; }
         }
 
         // Loads persisted state from GM storage. Safe when GM is missing/broken —
@@ -802,35 +871,44 @@
             } catch (_) { perCourse = {}; }
         }
 
-        // Writes are monotonic: the persisted value never regresses below what's
-        // already known, even if called with an older/smaller timestamp.
-        async function saveGlobal(ts) {
-            if (!isPositiveFiniteNumber(ts)) return;
-            globalTs = Math.max(globalTs, ts);
-            if (!hasGM()) return;
-            try { await GM.setValue(LAST_DOWNLOAD_AT_KEY, globalTs); } catch (_) {}
-        }
-
-        async function savePerCourse(rowNames, ts) {
-            if (!isPositiveFiniteNumber(ts) || !Array.isArray(rowNames) || rowNames.length === 0) return;
-            for (const rowName of rowNames) {
-                if (typeof rowName !== 'string' || !rowName) continue;
-                const existing = perCourse[rowName];
-                perCourse[rowName] = isPositiveFiniteNumber(existing) ? Math.max(existing, ts) : ts;
-            }
-            perCourse = pruneHistory(perCourse, HISTORY_MAX_ENTRIES);
-            if (!hasGM()) return;
-            try { await GM.setValue(COURSE_DOWNLOADS_KEY, perCourse); } catch (_) {}
+        // Records one finished batch as a single atomic operation: acquire the history
+        // lock, re-read storage, merge only this batch's rows, persist, then adopt the
+        // merged result as the new in-memory state. Never throws — a storage failure
+        // leaves history untouched rather than aborting the caller's success path.
+        async function recordBatch(completedRowNames, startedAt, advanceGlobal) {
+            try {
+                await withHistoryLock(async () => {
+                    const current = await readAuthoritative();
+                    if (!current) return;
+                    const merged = mergePersistedHistory(current, {
+                        completedRowNames, startedAt, advanceGlobal, cap: HISTORY_MAX_ENTRIES,
+                    });
+                    if (current.stored) {
+                        // Per-course map first: if the second write fails, the global stays
+                        // behind, which only ever under-reports "synced" — never over-reports.
+                        try { await GM.setValue(COURSE_DOWNLOADS_KEY, merged.perCourse); } catch (_) {}
+                        try { await GM.setValue(LAST_DOWNLOAD_AT_KEY, merged.globalTs); } catch (_) {}
+                    }
+                    globalTs = merged.globalTs;
+                    perCourse = merged.perCourse;
+                });
+            } catch (_) {}
         }
 
         // Resets both keys back to their defaults (0 / {}) — no new GM grant needed,
-        // reuses the existing GM.setValue grant.
+        // reuses the existing GM.setValue grant. Held under the same lock as
+        // recordBatch so a concurrent batch can never half-resurrect the cleared state.
         async function reset() {
-            globalTs = 0;
-            perCourse = {};
-            if (!hasGM()) return;
-            try { await GM.setValue(LAST_DOWNLOAD_AT_KEY, 0); } catch (_) {}
-            try { await GM.setValue(COURSE_DOWNLOADS_KEY, {}); } catch (_) {}
+            try {
+                await withHistoryLock(async () => {
+                    if (hasGM()) {
+                        try { await GM.setValue(COURSE_DOWNLOADS_KEY, {}); } catch (_) {}
+                        try { await GM.setValue(LAST_DOWNLOAD_AT_KEY, 0); } catch (_) {}
+                    }
+                    globalTs = 0;
+                    perCourse = {};
+                });
+            } catch (_) {}
         }
 
         function getGlobal() { return globalTs; }
@@ -840,7 +918,8 @@
 
         return {
             summarizeCourseCompletion, baselineFor, isUpdatedSince, formatLocalDateTime, pruneHistory,
-            load, saveGlobal, savePerCourse, reset,
+            mergePersistedHistory,
+            load, recordBatch, reset,
             getGlobal, getPerCourseMap, getBaseline, trackedCourseCount,
         };
     })();
@@ -2017,12 +2096,9 @@
             await orchestrator.runQueue(tasks, root);
             const s = orchestrator.state;
             const { completedRowNames, allComplete } = downloadHistory.summarizeCourseCompletion(s.tasks);
-            if (completedRowNames.length > 0) {
-                await downloadHistory.savePerCourse(completedRowNames, s.startedAt);
-            }
-            if (allComplete && s.failed === 0 && s.paused === false) {
-                await downloadHistory.saveGlobal(s.startedAt);
-            }
+            const advanceGlobal = allComplete && s.failed === 0 && s.paused === false;
+            // One atomic, cross-tab-safe read-modify-write for the whole batch.
+            await downloadHistory.recordBatch(completedRowNames, s.startedAt, advanceGlobal);
             // Refresh the toolbar label/button and any already-injected row badges,
             // regardless of whether anything actually advanced (cheap and idempotent).
             ui.updateHistoryUI();

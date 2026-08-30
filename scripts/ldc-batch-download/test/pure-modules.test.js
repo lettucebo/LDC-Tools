@@ -176,7 +176,26 @@ const downloadHistory = (() => {
         for (const [k, v] of kept) out[k] = v;
         return out;
     }
-    return { summarizeCourseCompletion, baselineFor, isUpdatedSince, formatLocalDateTime, pruneHistory };
+    function mergePersistedHistory(persisted, batch) {
+        const p = persisted && typeof persisted === 'object' ? persisted : {};
+        const b = batch && typeof batch === 'object' ? batch : {};
+        const cap = isValidCap(b.cap) ? Math.floor(b.cap) : HISTORY_MAX_ENTRIES;
+        const baseGlobal = isPositiveFiniteNumber(p.globalTs) ? p.globalTs : 0;
+        const merged = pruneHistory(p.perCourse, cap);
+        const ts = isPositiveFiniteNumber(b.startedAt) ? b.startedAt : 0;
+        if (ts > 0 && Array.isArray(b.completedRowNames)) {
+            for (const rowName of b.completedRowNames) {
+                if (typeof rowName !== 'string' || !rowName) continue;
+                const existing = merged[rowName];
+                merged[rowName] = isPositiveFiniteNumber(existing) ? Math.max(existing, ts) : ts;
+            }
+        }
+        return {
+            globalTs: (b.advanceGlobal === true && ts > 0) ? Math.max(baseGlobal, ts) : baseGlobal,
+            perCourse: pruneHistory(merged, cap),
+        };
+    }
+    return { summarizeCourseCompletion, baselineFor, isUpdatedSince, formatLocalDateTime, pruneHistory, mergePersistedHistory };
 })();
 
 let pass = 0, fail = 0;
@@ -480,6 +499,77 @@ eq(downloadHistory.pruneHistory({ a: 100, b: 300, c: 200 }, 2), { b: 300, c: 200
 eq(downloadHistory.pruneHistory({ a: 100, b: 300, c: 200 }, 0), {}, 'pruneHistory: cap of zero retains no entries');
 eq(downloadHistory.pruneHistory({ a: 1, b: 2 }), { b: 2, a: 1 }, 'pruneHistory: default cap (3000) keeps entries when under the limit');
 eq(downloadHistory.pruneHistory({ a: 5 }, 'nope'), { a: 5 }, 'pruneHistory: invalid cap parameter falls back to default 3000');
+
+// mergePersistedHistory — the cross-tab merge run inside the history Web Lock.
+// `persisted` is always the state re-read from storage inside the lock, never the
+// in-memory snapshot taken at boot; `batch` describes only the batch that just
+// finished in this tab.
+eq(downloadHistory.mergePersistedHistory(
+    { globalTs: 500, perCourse: { A: 400, B: 450 } },
+    { completedRowNames: ['A'], startedAt: 900, advanceGlobal: true }),
+    { globalTs: 900, perCourse: { A: 900, B: 450 } },
+    'mergePersistedHistory: advances the batch row and the global, keeps unrelated course keys');
+
+eq(downloadHistory.mergePersistedHistory(
+    { globalTs: 500, perCourse: { A: 400, B: 450 } },
+    { completedRowNames: ['A'], startedAt: 900, advanceGlobal: false }),
+    { globalTs: 500, perCourse: { A: 900, B: 450 } },
+    'mergePersistedHistory: advanceGlobal false leaves the global timestamp untouched');
+
+eq(downloadHistory.mergePersistedHistory(
+    { globalTs: 2000, perCourse: { A: 1500 } },
+    { completedRowNames: ['A'], startedAt: 900, advanceGlobal: true }),
+    { globalTs: 2000, perCourse: { A: 1500 } },
+    'mergePersistedHistory: monotonic — an older batch never regresses a newer persisted value');
+
+// Another tab wrote B while this tab was busy; this tab must not erase it.
+eq(downloadHistory.mergePersistedHistory(
+    { globalTs: 0, perCourse: { B: 700 } },
+    { completedRowNames: ['A'], startedAt: 900, advanceGlobal: false }),
+    { globalTs: 0, perCourse: { A: 900, B: 700 } },
+    'mergePersistedHistory: preserves a key written by another tab after this tab booted');
+
+// Another tab reset history mid-batch: storage is empty, so only this batch's
+// rows come back — stale in-memory-only keys must never be resurrected.
+eq(downloadHistory.mergePersistedHistory(
+    { globalTs: 0, perCourse: {} },
+    { completedRowNames: ['A'], startedAt: 900, advanceGlobal: true }),
+    { globalTs: 900, perCourse: { A: 900 } },
+    'mergePersistedHistory: a reset performed by another tab is not resurrected');
+
+eq(downloadHistory.mergePersistedHistory(
+    { globalTs: -1, perCourse: { A: 'x', B: 0, C: 300 } },
+    { completedRowNames: ['A'], startedAt: 900, advanceGlobal: true }),
+    { globalTs: 900, perCourse: { A: 900, C: 300 } },
+    'mergePersistedHistory: prunes malformed persisted entries and normalizes an invalid global');
+
+eq(downloadHistory.mergePersistedHistory(
+    { globalTs: 'nope', perCourse: 'not-a-map' },
+    { completedRowNames: ['A', '', null, 'B'], startedAt: 900, advanceGlobal: true }),
+    { globalTs: 900, perCourse: { A: 900, B: 900 } },
+    'mergePersistedHistory: malformed persisted shapes degrade to defaults; blank row names ignored');
+
+eq(downloadHistory.mergePersistedHistory(
+    { globalTs: 500, perCourse: { A: 400 } },
+    { completedRowNames: ['A'], startedAt: 0, advanceGlobal: true }),
+    { globalTs: 500, perCourse: { A: 400 } },
+    'mergePersistedHistory: an invalid startedAt records nothing and never advances the global');
+
+eq(downloadHistory.mergePersistedHistory(
+    { globalTs: 500, perCourse: { A: 400 } },
+    { completedRowNames: [], startedAt: 900, advanceGlobal: true }),
+    { globalTs: 900, perCourse: { A: 400 } },
+    'mergePersistedHistory: a fully-successful empty-row batch still advances the global');
+
+eq(downloadHistory.mergePersistedHistory(
+    { globalTs: 100, perCourse: { A: 100, B: 300, C: 200 } },
+    { completedRowNames: ['D'], startedAt: 900, advanceGlobal: true, cap: 2 }),
+    { globalTs: 900, perCourse: { D: 900, B: 300 } },
+    'mergePersistedHistory: honours the entry cap, keeping the newest timestamps');
+
+eq(downloadHistory.mergePersistedHistory(null, null),
+    { globalTs: 0, perCourse: {} },
+    'mergePersistedHistory: null inputs degrade to empty state');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
