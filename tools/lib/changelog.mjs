@@ -23,8 +23,16 @@ export function parseChangelogSections(markdown) {
     return sections.map((s) => ({ label: s.label, heading: s.heading, body: s.bodyLines.join('\n') }));
 }
 
-function isBlankBody(body) {
-    return body.split(/\r?\n/).every((l) => l.trim() === '');
+// A section "has content" only if at least one line is non-blank AND is not
+// itself just a Markdown heading (e.g. a bare "### Added" subheading with no
+// entries underneath must NOT count as content).
+const SUBHEADING_RE = /^#{1,6}(\s|$)/;
+
+function hasEntryContent(body) {
+    return body.split(/\r?\n/).some((l) => {
+        const trimmed = l.trim();
+        return trimmed !== '' && !SUBHEADING_RE.test(trimmed);
+    });
 }
 
 /**
@@ -42,7 +50,7 @@ export function extractSection(markdown, version) {
         return { ok: false, error: `multiple "## [${version}]" sections found (expected exactly one)` };
     }
     const section = matches[0];
-    if (isBlankBody(section.body)) {
+    if (!hasEntryContent(section.body)) {
         return { ok: false, error: `"## [${version}]" section is empty` };
     }
     return { ok: true, heading: section.heading, body: section.body.replace(/\n+$/, '') };
@@ -72,7 +80,7 @@ export function validateScriptChangelogStructure(markdown, expectedVersion) {
         errors.push(`missing "## [${expectedVersion}]" section`);
     } else if (matching.length > 1) {
         errors.push(`multiple "## [${expectedVersion}]" sections found (expected exactly one)`);
-    } else if (isBlankBody(matching[0].body)) {
+    } else if (!hasEntryContent(matching[0].body)) {
         errors.push(`"## [${expectedVersion}]" section has no entries`);
     }
 

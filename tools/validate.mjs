@@ -19,13 +19,15 @@ import {
 
 export function parseArgs(argv) {
     let releaseTag = null;
+    let releaseTagProvided = false;
     for (let i = 0; i < argv.length; i++) {
         if (argv[i] === '--release-tag') {
+            releaseTagProvided = true;
             releaseTag = argv[i + 1];
             i++;
         }
     }
-    return { releaseTag };
+    return { releaseTag, releaseTagProvided };
 }
 
 /**
@@ -35,9 +37,14 @@ export function parseArgs(argv) {
 export function runValidate(argv, repoRoot) {
     const report = [];
     const log = (line) => report.push(line);
-    const { releaseTag } = parseArgs(argv);
+    const { releaseTag, releaseTagProvided } = parseArgs(argv);
 
-    log(releaseTag ? `Mode: release (--release-tag ${releaseTag})` : 'Mode: PR/push');
+    if (releaseTagProvided && !releaseTag) {
+        log(`FAIL [args] --release-tag requires a non-empty vX.Y.Z value (e.g. --release-tag v0.9.0)`);
+        return { ok: false, report };
+    }
+
+    log(releaseTagProvided ? `Mode: release (--release-tag ${releaseTag})` : 'Mode: PR/push');
 
     const scripts = collectScripts(repoRoot);
     log(`Found ${scripts.length} script folder(s): ${scripts.map((s) => s.id).join(', ')}`);
@@ -71,7 +78,7 @@ export function runValidate(argv, repoRoot) {
     log('PASS [changelog] every script CHANGELOG.md has a valid, first, non-empty section for the current version');
 
     const ids = scripts.map((s) => s.id);
-    if (releaseTag) {
+    if (releaseTagProvided) {
         const releaseResult = runReleaseModeCheck(repoRoot, ids, sync.version, releaseTag);
         if (!releaseResult.ok) {
             for (const e of releaseResult.errors) log(`FAIL [release] ${e}`);

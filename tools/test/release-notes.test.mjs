@@ -63,6 +63,18 @@ test('buildReleaseNotes fails when a script CHANGELOG.md section is empty', () =
     assert.match(result.error, /empty/i);
 });
 
+test('buildReleaseNotes fails when a script CHANGELOG.md section only has a subheading and no actual entries', () => {
+    const dir = scratch('notes-heading-only-section');
+    writeFixtureScripts(dir, ['alpha'], '0.9.0');
+    fs.writeFileSync(path.join(dir, 'CHANGELOG.md'), '# Changelog\n\n## [0.9.0] — 2026-08-30\n\nRoot notes.\n');
+    const changelogPath = path.join(dir, 'scripts', 'alpha', 'CHANGELOG.md');
+    fs.writeFileSync(changelogPath, '## [Unreleased]\n\n## [0.9.0] — 2026-08-30\n\n### Added\n\n## [0.8.5] — 2026-07-04\n\n### Changed\n- old\n');
+    const result = buildReleaseNotes(dir, '0.9.0');
+    assert.equal(result.ok, false);
+    assert.match(result.error, /alpha/);
+    assert.match(result.error, /empty/i);
+});
+
 test('buildReleaseNotes fails when a script CHANGELOG.md is missing entirely', () => {
     const dir = scratch('notes-missing-file');
     writeFixtureScripts(dir, ['alpha'], '0.9.0');

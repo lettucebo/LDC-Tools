@@ -54,6 +54,13 @@ test('extractSection fails when the section body is empty', () => {
     assert.match(result.error, /empty/i);
 });
 
+test('extractSection fails when the section only has a subheading and no actual entry content', () => {
+    const headingOnly = `## [Unreleased]\n\n## [0.9.0] — 2026-08-30\n\n### Added\n\n## [0.8.5] — 2026-07-04\n\n### Changed\n- old\n`;
+    const result = extractSection(headingOnly, '0.9.0');
+    assert.equal(result.ok, false);
+    assert.match(result.error, /empty/i);
+});
+
 test('validateScriptChangelogStructure passes for a well-formed script changelog', () => {
     const result = validateScriptChangelogStructure(GOOD_CHANGELOG, '0.9.0');
     assert.equal(result.ok, true);
@@ -83,6 +90,20 @@ test('validateScriptChangelogStructure fails when the version section is duplica
 test('validateScriptChangelogStructure fails when the version section is empty', () => {
     const emptyBody = `## [Unreleased]\n\n## [0.9.0] — 2026-08-30\n\n## [0.8.5] — 2026-07-04\n\nbody\n`;
     const result = validateScriptChangelogStructure(emptyBody, '0.9.0');
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((e) => /no entries|empty/i.test(e)));
+});
+
+test('validateScriptChangelogStructure fails when the version section only has a subheading and no actual entry content', () => {
+    const headingOnly = `## [Unreleased]\n\n## [0.9.0] — 2026-08-30\n\n### Added\n\n## [0.8.5] — 2026-07-04\n\n### Changed\n- old\n`;
+    const result = validateScriptChangelogStructure(headingOnly, '0.9.0');
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((e) => /no entries|empty/i.test(e)));
+});
+
+test('validateScriptChangelogStructure fails when the version section has multiple subheadings but still no entries', () => {
+    const headingOnly = `## [Unreleased]\n\n## [0.9.0] — 2026-08-30\n\n### Added\n\n### Fixed\n\n## [0.8.5] — 2026-07-04\n\n### Changed\n- old\n`;
+    const result = validateScriptChangelogStructure(headingOnly, '0.9.0');
     assert.equal(result.ok, false);
     assert.ok(result.errors.some((e) => /no entries|empty/i.test(e)));
 });
