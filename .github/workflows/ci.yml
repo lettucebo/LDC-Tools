@@ -43,6 +43,14 @@ jobs:
         shell: bash
         run: node tools/validate.mjs
 
+      - name: Run release tooling tests
+        shell: bash
+        # tools/test/*.test.mjs covers the release gate itself (strict CLI
+        # argument parsing, core-only tag parsing, v1.0.0 tombstone
+        # enforcement, on-main baseline selection). A regression there would
+        # silently weaken every later release check, so it is part of CI.
+        run: node --test "tools/test/*.test.mjs"
+
       - name: Run userscript tests
         shell: bash
         run: node tools/run-tests.mjs

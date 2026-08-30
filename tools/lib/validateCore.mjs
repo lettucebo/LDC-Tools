@@ -9,7 +9,7 @@ import { isValidSemver, compareSemver, parseRepoTag } from './semver.mjs';
 import { validateMetadata, parseMetadataFields } from './metadata.mjs';
 import { validateScriptChangelogStructure } from './changelog.mjs';
 import { listScriptIds } from './repoScripts.mjs';
-import { listTags, showFileAtRef, refExists } from './gitRepo.mjs';
+import { listTags, showFileAtRef, refExists, isAncestor } from './gitRepo.mjs';
 
 // Tags that are permanently retired: they must never be selected as a
 // release baseline (see findReleaseBaseline) AND release mode must reject
@@ -153,19 +153,39 @@ export function runPrModeCheck(repoRoot, ids, currentVersion, baseRef = 'refs/re
 
 /**
  * Finds the release baseline for `releaseTag`: the greatest-SemVer other
- * strict repo-wide `vX.Y.Z` tag (excluding `releaseTag` itself and the
- * permanently retired `v1.0.0`) whose commit has all scripts' versions
- * equal to that tag's own version (i.e. was itself a synchronized release).
- * Legacy per-script tags (e.g. `ldc-batch-download-v0.8.2`) never match the
- * strict `vX.Y.Z` shape and are excluded automatically.
+ * strict repo-wide `vX.Y.Z` tag whose commit is on the released line of
+ * history and was itself a synchronized release. A candidate must satisfy
+ * all of:
+ *
+ * 1. not be `releaseTag` itself, and not be permanently retired (`v1.0.0`);
+ * 2. match the strict core `vX.Y.Z` shape (this excludes legacy per-script
+ *    tags such as `ldc-batch-download-v0.8.2` and prerelease/build tags);
+ * 3. be an **ancestor of `mainRef`** (default `refs/remotes/origin/main`) —
+ *    a tag alone only proves "some commit in this repository", so an
+ *    off-main tag (side branch, unmerged work, a fetched fork ref) must
+ *    never define the release baseline; a bogus high off-main tag would
+ *    otherwise block every real release, and off-main content would be
+ *    treated as released history;
+ * 4. have all scripts' versions equal to that tag's own version.
+ *
+ * If `mainRef` cannot be resolved the whole selection fails closed rather
+ * than degrading to "any tag anywhere in the repository".
  */
-export function findReleaseBaseline(repoRoot, ids, releaseTag) {
+export function findReleaseBaseline(repoRoot, ids, releaseTag, mainRef = 'refs/remotes/origin/main') {
+    if (!refExists(repoRoot, mainRef)) {
+        return {
+            ok: false,
+            error: `base ref "${mainRef}" not found, so release baseline candidates cannot be restricted to main's history (fetch origin/main first)`,
+            baseline: null,
+        };
+    }
     const candidates = [];
     for (const tag of listTags(repoRoot)) {
         if (tag === releaseTag) continue;
         if (RETIRED_TAGS.has(tag)) continue;
         const parsedTag = parseRepoTag(tag);
         if (!parsedTag) continue; // not a strict repo-wide "vX.Y.Z" tag
+        if (isAncestor(repoRoot, tag, mainRef) !== true) continue; // off-main (or unknown) -> never a baseline
         const { errors, versions } = getVersionsAtGitRef(repoRoot, tag, ids);
         if (errors.length) continue; // missing/invalid script at this tag
         const sync = requireSynchronizedVersion(versions);
@@ -186,7 +206,7 @@ export function findReleaseBaseline(repoRoot, ids, releaseTag) {
  * release baseline via {@link findReleaseBaseline}, and requires the
  * current version to be strictly greater than that baseline.
  */
-export function runReleaseModeCheck(repoRoot, ids, currentVersion, releaseTag) {
+export function runReleaseModeCheck(repoRoot, ids, currentVersion, releaseTag, mainRef = 'refs/remotes/origin/main') {
     const errors = [];
     const parsedTag = parseRepoTag(releaseTag);
     if (!parsedTag) {
@@ -209,7 +229,7 @@ export function runReleaseModeCheck(repoRoot, ids, currentVersion, releaseTag) {
     if (parsedTag.version !== currentVersion) {
         errors.push(`current version ${currentVersion} does not match release tag version ${parsedTag.version}`);
     }
-    const baselineResult = findReleaseBaseline(repoRoot, ids, releaseTag);
+    const baselineResult = findReleaseBaseline(repoRoot, ids, releaseTag, mainRef);
     if (!baselineResult.ok) {
         errors.push(baselineResult.error);
         return { ok: false, errors };

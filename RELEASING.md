@@ -65,16 +65,29 @@ This repo has deterministic, dependency-free Node.js tooling in
   `@homepageURL`, `@supportURL`, `@license MIT`) on every userscript;
   requires every `@version` to be identical; requires each script's
   `CHANGELOG.md` to have a single, non-empty, first-after-`[Unreleased]`
-  section matching that version. With no flags it also runs **PR/push
-  mode**: the current version must be `>=` the version on
+  section matching that version. It accepts exactly two argument shapes —
+  no arguments, or `--release-tag <value>` as two separate arguments.
+  Anything else (`--release-tag=vX.Y.Z`, a misspelled flag, a stray
+  positional, a repeated flag) is a hard `FAIL [args]`, never a silent
+  fallback to the weaker mode. With no flags it runs **PR/push mode**:
+  the current version must be `>=` the version on
   `refs/remotes/origin/main` (never lower). With
   **`--release-tag vX.Y.Z`** it instead runs **release mode**: the
   release tag itself is rejected outright if it is `v1.0.0` (the
   permanently retired tag — see Tag history above), independent of any
   other check; otherwise the current version must equal the tag's
   version and be **strictly greater** than the best matching prior
-  synchronized repo-wide tag (legacy per-script tags and `v1.0.0` are
-  also excluded from baseline-candidate consideration).
+  synchronized repo-wide tag. Baseline candidates must be core `vX.Y.Z`
+  tags (prerelease/build-metadata tags such as `v9.9.9-rc.1` are
+  rejected, matching the workflow's tag regex), must not be `v1.0.0` or
+  the tag being released, and must be **ancestors of
+  `refs/remotes/origin/main`** — an off-main tag can never define the
+  baseline, and if `refs/remotes/origin/main` is missing the check fails
+  closed instead of considering every tag in the repository.
+- **`node --test "tools/test/*.test.mjs"`** — the release tooling's own
+  test suite (strict CLI argument parsing, core-only tag parsing, the
+  `v1.0.0` tombstone, on-main baseline selection). These protect the
+  release gate itself, so CI and the release workflow both run them.
 - **`node tools/run-tests.mjs`** — discovers and runs every
   `scripts/*/test/*.test.js`; finding zero test files is treated as a
   failure (to catch a broken glob rather than silently passing).
@@ -84,15 +97,17 @@ This repo has deterministic, dependency-free Node.js tooling in
   `## [X.Y.Z]` section, in place of manually copy-pasting changelog
   text.
 
-Run both validators locally before opening a release PR:
+Run all three locally before opening a release PR:
 
 ```bash
 node tools/validate.mjs
+node --test "tools/test/*.test.mjs"
 node tools/run-tests.mjs
 ```
 
 ```powershell
 node tools\validate.mjs
+node --test "tools/test/*.test.mjs"
 node tools\run-tests.mjs
 ```
 
@@ -102,28 +117,43 @@ node tools\run-tests.mjs
   test`) runs on every pull request, on `push` to `main`, and on manual
   `workflow_dispatch`. It fetches `origin/main` explicitly (so the
   non-downgrade baseline check always has something to compare against)
-  and runs `node tools/validate.mjs` then `node tools/run-tests.mjs`.
-- **`.github/workflows/release.yml`** (workflow name `Release`, job
-  `Validate, test, and release`) runs on `push` of a `v*.*.*` tag, and
-  optionally as a `workflow_dispatch` dry run. On a real tag push it:
-  validates the tag against a strict `^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`
-  regex (the trigger glob alone would allow malformed/prerelease-style
-  tags through); fetches `origin/main` and requires the tagged commit to
-  equal `origin/main`'s tip (refuses to release an unmerged/rewritten
-  commit); runs `node tools/validate.mjs --release-tag vX.Y.Z` and
-  `node tools/run-tests.mjs`; generates notes with
-  `node tools/release-notes.mjs`; and runs
-  `gh release create vX.Y.Z --title vX.Y.Z --notes-file release-notes.md
-  --latest --verify-tag`. It authenticates `gh` via an explicit
-  `GH_TOKEN: ${{ github.token }}` env var (the `contents: write`
-  permission alone does not hand `gh` a credential), reads untrusted
-  values (`inputs.release_tag`, `github.ref_name`) through `env:` into
-  shell variables instead of interpolating them directly into `run:`
-  (blocks shell/script injection from a crafted dispatch input), and
-  uses `--verify-tag` so `gh` refuses to fabricate a release against a
-  tag that doesn't exist. A `workflow_dispatch` run only validates a
-  supplied tag string against `main`'s tip and never creates, deletes,
-  or pushes anything.
+  and runs `node tools/validate.mjs`,
+  `node --test "tools/test/*.test.mjs"`, then `node tools/run-tests.mjs`.
+- **`.github/workflows/release.yml`** (workflow name `Release`) runs on
+  `push` of a `v*.*.*` tag, and optionally as a `workflow_dispatch` dry
+  run. The workflow's default permission is `contents: read` and it is
+  split into two jobs:
+  - **`Validate and test (read-only)`** — `contents: read`, **no
+    `GH_TOKEN`**, checkout with `persist-credentials: false`, so nothing
+    in the validation path (including every manual dry run) holds a
+    credential that could create, move, or delete anything. It resolves
+    the tag from `github.ref_name` (or, for a dry run, the dispatch
+    input) via `env:` variables rather than `run:` interpolation,
+    enforces the strict
+    `^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$` regex (the
+    trigger glob alone would allow malformed/prerelease-style tags
+    through), requires the commit under test to equal `origin/main`'s
+    tip, and then runs `node tools/validate.mjs --release-tag vX.Y.Z`,
+    `node --test "tools/test/*.test.mjs"`, `node tools/run-tests.mjs`
+    and `node tools/release-notes.mjs`. On a dry run it stops here and
+    publishes the generated notes to the run summary.
+  - **`Publish GitHub release`** — guarded by
+    `if: github.event_name == 'push'`, so a manual dispatch never
+    instantiates it; this is the only job with `contents: write` and a
+    `GH_TOKEN`. It carries its own repo-wide
+    `concurrency: release-publish` group (independent of the ref) so two
+    different tags can never publish at the same time and race for the
+    "Latest" marker. It re-checks that its checkout is exactly the
+    commit the validation job passed forward, and then **immediately
+    before creating the release** re-queries the remote for
+    `refs/heads/main` and for the tag's peeled commit (requiring an
+    **annotated** tag) and requires both to equal that commit — so a tag
+    that was moved, or a `main` that advanced, aborts the publication
+    instead of overwriting a newer release. After
+    `gh release create ... --latest --verify-tag` it verifies remote
+    identity once more and, if anything changed mid-publication, deletes
+    the release it just created and fails, reporting loudly if that
+    rollback itself fails.
 
 Any failing step aborts before a Release is created (fail-closed).
 
@@ -165,10 +195,11 @@ documented feature list stays in sync with what users see.
 
 ```bash
 node tools/validate.mjs
+node --test "tools/test/*.test.mjs"
 node tools/run-tests.mjs
 ```
 
-Both must pass before opening a PR.
+All three must pass before opening a PR.
 
 ### 4. Branch, PR, and squash-merge
 
@@ -198,11 +229,25 @@ gh pr create --base main --head chore/release-vX.Y.Z `
 
 Confirm the `CI` workflow's `Validate and test` job is green **on the
 PR's actual head SHA** before merging — don't rely on an at-a-glance
-green badge, since this repo has other checks (e.g. a Copilot review
-check) that are easy to mistake for CI:
+green badge, and don't use `gh pr checks --required` (it only reports
+checks that branch protection marks required, so with no such rule it
+tells you nothing). Assert the check's identity instead: name, status,
+conclusion, and head SHA.
 
 ```bash
-gh pr checks <PR#> --required
+set -euo pipefail
+PR=<PR#>
+HEAD_SHA="$(gh pr view "$PR" --json headRefOid --jq '.headRefOid')"
+VERDICT="$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/check-runs" \
+  --jq '[.check_runs[] | select(.name == "Validate and test" and .status == "completed")]
+        | if length == 1 then .[0].conclusion else "ambiguous(\(length) matching check runs)" end')"
+if [ "$VERDICT" != "success" ]; then
+  echo "ERROR: CI 'Validate and test' on $HEAD_SHA is '$VERDICT'; refusing to merge" >&2
+  exit 1
+fi
+gh run list --workflow ci.yml --event pull_request \
+  --json databaseId,headSha,status,conclusion \
+  --jq ".[] | select(.headSha == \"$HEAD_SHA\")"
 ```
 
 Then squash-merge with the branch auto-deleted:
@@ -224,58 +269,86 @@ gh pr merge <PR#> --squash --delete-branch
 Wait for the `push`-to-`main` `CI` run to go green before tagging:
 
 ```bash
-gh run list --workflow ci.yml --branch main --limit 1
+gh run list --workflow ci.yml --branch main --event push --limit 1 \
+  --json databaseId,headSha,status,conclusion
 gh run watch <run-id>
 ```
 
-Then verify the local `main` you're about to tag is exactly
-`origin/main`'s tip, and only then tag and push. This check must be
-**fail-closed**: it has to terminate the script on mismatch *before*
-`git tag` can run, not just skip printing a success message while
-`git tag` still executes on the next line regardless
-(`... && echo OK` followed by unconditional commands is **not**
-sufficient):
+Then tag the commit **read from the remote**, passing that SHA
+explicitly to `git tag`. Do not `git checkout main` / `git pull` first:
+local branch state is irrelevant here and only adds a way to tag the
+wrong commit. Every native command is checked, so a failed fetch or a
+failed guard stops the sequence *before* `git tag` / `git push` runs.
+The tag must be **annotated** (`git tag -a`) — the release workflow
+refuses to publish a lightweight tag.
 
 ```bash
-git checkout main
-git pull --ff-only
+set -euo pipefail
+TAG=vX.Y.Z
+
 git fetch origin main:refs/remotes/origin/main
-test "$(git rev-parse main)" = "$(git rev-parse refs/remotes/origin/main)" || {
-    echo "ERROR: local main ($(git rev-parse main)) does not match origin/main ($(git rev-parse refs/remotes/origin/main)); refusing to tag" >&2
-    exit 1
-}
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
+MAIN_COMMIT="$(git rev-parse --verify "refs/remotes/origin/main^{commit}")"
+echo "origin/main is $MAIN_COMMIT"
+
+git tag -a "$TAG" -m "$TAG" "$MAIN_COMMIT"
+TAG_COMMIT="$(git rev-parse --verify "$TAG^{commit}")"
+if [ "$TAG_COMMIT" != "$MAIN_COMMIT" ]; then
+  echo "ERROR: $TAG points at $TAG_COMMIT, not the verified origin/main commit $MAIN_COMMIT" >&2
+  exit 1
+fi
+git push origin "refs/tags/$TAG"
 ```
 
 ```powershell
-git checkout main
-git pull --ff-only
+$ErrorActionPreference = 'Stop'
+$tag = 'vX.Y.Z'
+
+# PowerShell does not stop on a non-zero exit from a native command, so
+# every git call below is checked explicitly.
 git fetch origin main:refs/remotes/origin/main
-if ((git rev-parse main) -ne (git rev-parse refs/remotes/origin/main)) {
-    throw "local main does not match origin/main; refusing to tag"
-}
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
+if ($LASTEXITCODE -ne 0) { throw 'git fetch failed; refusing to tag' }
+
+$mainCommit = git rev-parse --verify 'refs/remotes/origin/main^{commit}'
+if ($LASTEXITCODE -ne 0 -or -not $mainCommit) { throw 'could not resolve origin/main; refusing to tag' }
+$mainCommit = $mainCommit.Trim()
+Write-Host "origin/main is $mainCommit"
+
+git tag -a $tag -m $tag $mainCommit
+if ($LASTEXITCODE -ne 0) { throw "git tag $tag failed" }
+
+$tagCommit = git rev-parse --verify "$tag^{commit}"
+if ($LASTEXITCODE -ne 0 -or -not $tagCommit) { throw "could not resolve $tag" }
+if ($tagCommit.Trim() -ne $mainCommit) { throw "$tag points at $($tagCommit.Trim()), not $mainCommit; refusing to push" }
+
+git push origin "refs/tags/$tag"
+if ($LASTEXITCODE -ne 0) { throw "git push of $tag failed" }
 ```
 
 ### 6. Let the Release workflow publish it, then verify
 
 Pushing the tag triggers `.github/workflows/release.yml`, which
 validates and tests again, generates notes via
-`node tools/release-notes.mjs`, and creates the GitHub Release
-automatically. Verify it actually succeeded — do not assume:
+`node tools/release-notes.mjs`, re-verifies the remote tag/`main`
+identity immediately before and after publishing, and creates the GitHub
+Release automatically. Verify it actually succeeded — do not assume, and
+filter by the tag *and* its commit so a previous manual dry run (or any
+other run) cannot be mistaken for this release's run:
 
 ```bash
-gh run list --workflow release.yml --limit 1
+set -euo pipefail
+TAG=vX.Y.Z
+TAG_COMMIT="$(git rev-parse --verify "$TAG^{commit}")"
+gh run list --workflow release.yml --event push \
+  --json databaseId,headBranch,headSha,status,conclusion \
+  --jq ".[] | select(.headBranch == \"$TAG\" and .headSha == \"$TAG_COMMIT\")"
 gh run watch <run-id>
-gh release view vX.Y.Z
+gh release view "$TAG" --json tagName,isLatest,isDraft,targetCommitish,body
 ```
 
-Confirm the run concluded `success`, the release is titled `vX.Y.Z` and
-marked Latest, its target commit matches the peeled tag commit and
-`origin/main`'s tip, and the notes contain both the root `CHANGELOG.md`
-section and every script's section.
+Confirm the matching run concluded `success`, the release is titled
+`vX.Y.Z` and marked Latest, its target commit matches the peeled tag
+commit and `origin/main`'s tip, and the notes contain both the root
+`CHANGELOG.md` section and every script's section.
 
 ### 7. No release assets needed
 
@@ -290,26 +363,58 @@ If `release.yml` fails after the tag has already been pushed, you have a
 tag with no (or a partial) Release. **Do not just re-run the failed
 workflow run** — GitHub reruns reuse the original
 `GITHUB_SHA`/`GITHUB_REF` and will not pick up a workflow fix made
-afterward. Instead:
+afterward. Clean up first, fail-closed: only an explicitly *confirmed*
+"no such release" answer may skip the release deletion. An API call that
+fails (expired auth, network error, permission denied) is **not** a
+not-found — deleting the tag in that state is exactly what orphans a
+Release.
 
 ```bash
-gh release delete vX.Y.Z --yes 2>/dev/null || true   # only if a partial release exists
-git push origin :refs/tags/vX.Y.Z
-git tag -d vX.Y.Z
-# fix the underlying problem, re-verify the origin/main equality check, then:
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
+set -euo pipefail
+TAG=vX.Y.Z
+
+# A successful, fully paginated listing that does not contain $TAG is a
+# confirmed "not found"; any API failure exits non-zero here instead.
+RELEASE_ID="$(gh api --paginate "repos/{owner}/{repo}/releases" \
+  --jq ".[] | select(.tag_name == \"$TAG\") | .id")"
+if [ -n "$RELEASE_ID" ]; then
+  gh release delete "$TAG" --yes
+  STILL="$(gh api --paginate "repos/{owner}/{repo}/releases" \
+    --jq ".[] | select(.tag_name == \"$TAG\") | .id")"
+  [ -z "$STILL" ] || { echo "ERROR: release $TAG still exists after delete" >&2; exit 1; }
+else
+  echo "Confirmed: the releases API listed successfully and has no release for $TAG."
+fi
+
+git push origin ":refs/tags/$TAG"
+[ -z "$(git ls-remote --tags origin "refs/tags/$TAG")" ] \
+  || { echo "ERROR: remote tag $TAG still exists" >&2; exit 1; }
+if [ -n "$(git tag --list "$TAG")" ]; then git tag -d "$TAG"; fi
+
+# Fix the underlying problem, then redo step 5 in full.
 ```
 
 ```powershell
-gh release delete vX.Y.Z --yes 2>$null   # only if a partial release exists; PowerShell does not stop
-                                          # on a non-zero exit from an external command by default, so
-                                          # this already behaves like bash's "|| true" here.
-git push origin :refs/tags/vX.Y.Z
-git tag -d vX.Y.Z
-# fix the underlying problem, re-verify the origin/main equality check, then:
-git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
+$ErrorActionPreference = 'Stop'
+$tag = 'vX.Y.Z'
+
+$releaseId = gh api --paginate "repos/{owner}/{repo}/releases" --jq ".[] | select(.tag_name == `"$tag`") | .id"
+if ($LASTEXITCODE -ne 0) { throw "could not list releases; refusing to touch the tag for $tag" }
+if ($releaseId) {
+    gh release delete $tag --yes
+    if ($LASTEXITCODE -ne 0) { throw "gh release delete $tag failed" }
+    $still = gh api --paginate "repos/{owner}/{repo}/releases" --jq ".[] | select(.tag_name == `"$tag`") | .id"
+    if ($LASTEXITCODE -ne 0 -or $still) { throw "release $tag still exists after delete" }
+} else {
+    Write-Host "Confirmed: the releases API listed successfully and has no release for $tag."
+}
+
+git push origin ":refs/tags/$tag"
+if ($LASTEXITCODE -ne 0) { throw "could not delete remote tag $tag" }
+$remoteTag = git ls-remote --tags origin "refs/tags/$tag"
+if ($LASTEXITCODE -ne 0) { throw "could not verify remote tag deletion" }
+if ($remoteTag) { throw "remote tag $tag still exists" }
+if (git tag --list $tag) { git tag -d $tag; if ($LASTEXITCODE -ne 0) { throw "could not delete local tag $tag" } }
 ```
 
 **Never change any script's content to work around this.** A version's
@@ -323,26 +428,50 @@ serves).
 ## Retiring a legacy release/tag
 
 Only retire a release/tag **after its replacement release has been
-confirmed successful** (Release workflow run green, `gh release view`
-shows it) — never delete the old one first as a "cleanup" step before
-the new one is verified. Delete the release, then the remote tag, then
-the local tag, as three separate commands in that exact order (deleting
-the tag first would leave an orphaned release pointing at nothing).
-Always pass `--yes` to skip the interactive confirmation prompt, and
-**never pass `--cleanup-tag`** to `gh release delete` — tag deletion is
-intentionally a separate, explicit, ordered step here, not something to
-fold into the release-delete call:
+confirmed successful** (Release workflow run green for that exact tag,
+`gh release view` shows it) — never delete the old one first as a
+"cleanup" step before the new one is verified. Delete the release, then
+the remote tag, then the local tag, in that exact order, **verifying
+each destructive step before starting the next** (deleting the tag first,
+or after an unverified release delete, leaves an orphaned release
+pointing at nothing). Always pass `--yes` to skip the interactive
+confirmation prompt, and **never pass `--cleanup-tag`** to
+`gh release delete` — tag deletion is intentionally a separate, checked
+step here, not something to fold into the release-delete call:
 
 ```bash
-gh release delete <old-tag> --yes
-git push origin :refs/tags/<old-tag>
-git tag -d <old-tag>
+set -euo pipefail
+OLD_TAG=<old-tag>
+
+gh release view "$OLD_TAG" --json tagName,name,createdAt   # confirm what you are deleting
+gh release delete "$OLD_TAG" --yes
+STILL="$(gh api --paginate "repos/{owner}/{repo}/releases" \
+  --jq ".[] | select(.tag_name == \"$OLD_TAG\") | .id")"
+[ -z "$STILL" ] || { echo "ERROR: release $OLD_TAG still exists; not touching the tag" >&2; exit 1; }
+
+git push origin ":refs/tags/$OLD_TAG"
+[ -z "$(git ls-remote --tags origin "refs/tags/$OLD_TAG")" ] \
+  || { echo "ERROR: remote tag $OLD_TAG still exists" >&2; exit 1; }
+if [ -n "$(git tag --list "$OLD_TAG")" ]; then git tag -d "$OLD_TAG"; fi
 ```
 
 ```powershell
-gh release delete <old-tag> --yes
-git push origin :refs/tags/<old-tag>
-git tag -d <old-tag>
+$ErrorActionPreference = 'Stop'
+$oldTag = '<old-tag>'
+
+gh release view $oldTag --json tagName,name,createdAt
+if ($LASTEXITCODE -ne 0) { throw "could not read release $oldTag; refusing to delete anything" }
+gh release delete $oldTag --yes
+if ($LASTEXITCODE -ne 0) { throw "gh release delete $oldTag failed" }
+$still = gh api --paginate "repos/{owner}/{repo}/releases" --jq ".[] | select(.tag_name == `"$oldTag`") | .id"
+if ($LASTEXITCODE -ne 0 -or $still) { throw "release $oldTag still exists; not touching the tag" }
+
+git push origin ":refs/tags/$oldTag"
+if ($LASTEXITCODE -ne 0) { throw "could not delete remote tag $oldTag" }
+$remoteTag = git ls-remote --tags origin "refs/tags/$oldTag"
+if ($LASTEXITCODE -ne 0) { throw "could not verify remote tag deletion" }
+if ($remoteTag) { throw "remote tag $oldTag still exists" }
+if (git tag --list $oldTag) { git tag -d $oldTag; if ($LASTEXITCODE -ne 0) { throw "could not delete local tag $oldTag" } }
 ```
 
 Other clones/forks must run `git fetch --prune --prune-tags` to see the
@@ -383,7 +512,7 @@ When you add a new userscript, scaffolded under `scripts/<new-id>/`:
    pattern (no test framework, plain `node` + a tiny `eq()` helper).
 4. Update the root `README.md` / `README.zh-TW.md` index to add the
    new script.
-5. Run `node tools/validate.mjs` and `node tools/run-tests.mjs` locally,
-   then follow "Cutting a release" above — the new script is folded
-   into the next synchronized `vX.Y.Z` release like any other script;
-   it does not get its own tag.
+5. Run `node tools/validate.mjs`, `node --test "tools/test/*.test.mjs"`
+   and `node tools/run-tests.mjs` locally, then follow "Cutting a
+   release" above — the new script is folded into the next synchronized
+   `vX.Y.Z` release like any other script; it does not get its own tag.

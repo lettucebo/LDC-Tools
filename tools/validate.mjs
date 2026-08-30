@@ -17,17 +17,56 @@ import {
     runReleaseModeCheck,
 } from './lib/validateCore.mjs';
 
+export const USAGE = [
+    'Usage:',
+    '  node tools/validate.mjs                       # PR/push mode',
+    '  node tools/validate.mjs --release-tag vX.Y.Z  # Release mode',
+].join('\n');
+
+/**
+ * Strictly parses the CLI's only two accepted argument shapes: no arguments
+ * at all, or exactly `--release-tag <value>` as two separate arguments.
+ *
+ * Anything else is a hard error. A release validator must never silently
+ * downgrade its own mode: an ignored typo (`--release-tag=v0.9.0`,
+ * `--relase-tag v0.9.0`, a bare positional `v0.9.0`) would previously run
+ * the far weaker PR/push mode - no tag/version equality check, no
+ * strictly-greater baseline gate, no `v1.0.0` tombstone check - while still
+ * exiting 0 and looking like a successful release validation.
+ *
+ * @returns {{ok: true, releaseTag: string|null, releaseTagProvided: boolean}
+ *          |{ok: false, error: string}}
+ */
 export function parseArgs(argv) {
-    let releaseTag = null;
-    let releaseTagProvided = false;
-    for (let i = 0; i < argv.length; i++) {
-        if (argv[i] === '--release-tag') {
-            releaseTagProvided = true;
-            releaseTag = argv[i + 1];
-            i++;
-        }
+    if (argv.length === 0) {
+        return { ok: true, releaseTag: null, releaseTagProvided: false };
     }
-    return { releaseTag, releaseTagProvided };
+    if (argv[0] !== '--release-tag') {
+        if (argv[0].startsWith('--release-tag=')) {
+            return {
+                ok: false,
+                error: `"${argv[0]}": --release-tag does not support "=" syntax; pass the value as a separate argument (--release-tag v0.9.0)`,
+            };
+        }
+        const kind = argv[0].startsWith('-') ? 'unknown option' : 'unexpected positional argument';
+        return { ok: false, error: `${kind} "${argv[0]}"` };
+    }
+    if (argv.length === 1) {
+        return { ok: false, error: '--release-tag requires a non-empty vX.Y.Z value (e.g. --release-tag v0.9.0)' };
+    }
+    if (argv.length > 2) {
+        return {
+            ok: false,
+            error: `unexpected extra argument(s) after --release-tag ${JSON.stringify(argv[1])}: ${argv
+                .slice(2)
+                .map((a) => JSON.stringify(a))
+                .join(', ')} (--release-tag may be given at most once, with exactly one value)`,
+        };
+    }
+    if (argv[1] === '') {
+        return { ok: false, error: '--release-tag requires a non-empty vX.Y.Z value (e.g. --release-tag v0.9.0)' };
+    }
+    return { ok: true, releaseTag: argv[1], releaseTagProvided: true };
 }
 
 /**
@@ -37,12 +76,14 @@ export function parseArgs(argv) {
 export function runValidate(argv, repoRoot) {
     const report = [];
     const log = (line) => report.push(line);
-    const { releaseTag, releaseTagProvided } = parseArgs(argv);
+    const parsed = parseArgs(argv);
 
-    if (releaseTagProvided && !releaseTag) {
-        log(`FAIL [args] --release-tag requires a non-empty vX.Y.Z value (e.g. --release-tag v0.9.0)`);
+    if (!parsed.ok) {
+        log(`FAIL [args] ${parsed.error}`);
+        log(USAGE);
         return { ok: false, report };
     }
+    const { releaseTag, releaseTagProvided } = parsed;
 
     log(releaseTagProvided ? `Mode: release (--release-tag ${releaseTag})` : 'Mode: PR/push');
 

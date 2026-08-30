@@ -69,9 +69,19 @@ export function compareSemver(a, b) {
 }
 
 /**
- * Parses a repo-wide release tag of the exact shape "v<strict-semver>",
- * e.g. "v0.8.5". Rejects legacy per-script tags like
- * "ldc-batch-download-v0.8.2" (they don't start with "v<digit>").
+ * Parses a repo-wide release tag of the exact shape "v<major>.<minor>.<patch>",
+ * e.g. "v0.8.5" — a *core* release version only.
+ *
+ * Prerelease ("v1.0.0-rc.1") and build-metadata ("v1.0.0+build.5") suffixes
+ * are rejected on purpose so this function stays exactly as strict as the
+ * Release workflow's tag gate
+ * (`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`). Anything laxer
+ * here would let a hand-created tag that can never be released through the
+ * workflow still be selected as the release baseline, where a high
+ * prerelease tag would block every subsequent real release.
+ *
+ * Legacy per-script tags such as "ldc-batch-download-v0.8.2" are rejected
+ * too (they don't start with "v<digit>").
  * @param {unknown} tag
  * @returns {{tag: string, version: string, parsed: object}|null}
  */
@@ -80,5 +90,6 @@ export function parseRepoTag(tag) {
     const version = tag.slice(1);
     const parsed = parseSemver(version);
     if (!parsed) return null;
+    if (parsed.prerelease !== null || parsed.build !== null) return null;
     return { tag, version, parsed };
 }

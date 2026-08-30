@@ -1,6 +1,6 @@
 // Thin wrapper around the `git` CLI used for reading tags/refs/file
 // contents at arbitrary commits without mutating the working tree.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 export function git(cwd, args) {
     // Explicitly pipe stderr (rather than letting it leak to the parent's
@@ -35,4 +35,25 @@ export function showFileAtRef(cwd, ref, relPath) {
 /** True if `ref` resolves to a real object in the repo at `cwd`. */
 export function refExists(cwd, ref) {
     return gitOrNull(cwd, ['rev-parse', '--verify', '--quiet', ref]) !== null;
+}
+
+/**
+ * True if `ancestorRef` is an ancestor of (or identical to) `descendantRef`.
+ *
+ * `git merge-base --is-ancestor` exits 0 for "yes" and 1 for "no"; any other
+ * exit status (bad ref, unreadable object, git missing) is an *unknown*
+ * answer, not a "no". Unknown is reported as `null` so callers can fail
+ * closed instead of treating an error as a definitive verdict.
+ * @returns {boolean|null}
+ */
+export function isAncestor(cwd, ancestorRef, descendantRef) {
+    const result = spawnSync('git', ['merge-base', '--is-ancestor', ancestorRef, descendantRef], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (result.error) return null;
+    if (result.status === 0) return true;
+    if (result.status === 1) return false;
+    return null;
 }

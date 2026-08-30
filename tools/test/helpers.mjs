@@ -65,6 +65,11 @@ function git(cwd, args) {
     return execFileSync('git', args, { cwd, encoding: 'utf8' });
 }
 
+/** Runs an arbitrary git command inside a fixture repo (branching, checkout, ...). */
+export function gitRun(repoDir, args) {
+    return git(repoDir, args);
+}
+
 /**
  * Initializes a throwaway git repository in `repoDir` (already populated with
  * fixture files) and commits everything on `main`.

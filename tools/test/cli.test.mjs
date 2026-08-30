@@ -97,20 +97,74 @@ test('CLI: node tools/validate.mjs --release-tag "" (explicit empty value) fails
 
 test('parseArgs distinguishes a bare --release-tag (flag present, no value) from no flag at all', () => {
     const bare = parseArgs(['--release-tag']);
-    assert.equal(bare.releaseTagProvided, true);
-    assert.equal(bare.releaseTag, undefined);
+    assert.equal(bare.ok, false);
+    assert.match(bare.error, /--release-tag/);
 
     const empty = parseArgs(['--release-tag', '']);
-    assert.equal(empty.releaseTagProvided, true);
-    assert.equal(empty.releaseTag, '');
+    assert.equal(empty.ok, false);
+    assert.match(empty.error, /--release-tag/);
 
     const none = parseArgs([]);
+    assert.equal(none.ok, true);
     assert.equal(none.releaseTagProvided, false);
     assert.equal(none.releaseTag, null);
 
     const withValue = parseArgs(['--release-tag', 'v0.9.0']);
+    assert.equal(withValue.ok, true);
     assert.equal(withValue.releaseTagProvided, true);
     assert.equal(withValue.releaseTag, 'v0.9.0');
+});
+
+// ---------------------------------------------------------------------------
+// Strict argument parsing. The old parser scanned argv for "--release-tag"
+// and ignored everything else, so any typo that did not produce that exact
+// token (`--release-tag=v0.9.0`, `--relase-tag v0.9.0`, `--release-tags`,
+// a bare positional `v0.9.0`) silently ran the *PR/push* mode instead: the
+// permissive ">= origin/main" comparison, with no strictly-greater baseline
+// gate, no tag/version equality check and no v1.0.0 tombstone check — while
+// still exiting 0 and looking like a successful release validation. A
+// release CLI must never silently downgrade its own mode; anything it does
+// not understand exactly must be a hard failure.
+// ---------------------------------------------------------------------------
+
+const STRICT_ARG_REJECTIONS = [
+    { name: 'equals syntax', argv: ['--release-tag=v0.9.0'] },
+    { name: 'equals syntax with empty value', argv: ['--release-tag='] },
+    { name: 'unknown flag alone', argv: ['--bogus'] },
+    { name: 'unknown flag alongside a valid --release-tag', argv: ['--release-tag', 'v0.9.0', '--bogus'] },
+    { name: 'near-miss flag spelling', argv: ['--release-tags', 'v0.9.0'] },
+    { name: 'bare positional argument', argv: ['v0.9.0'] },
+    { name: 'positional after a valid --release-tag', argv: ['--release-tag', 'v0.9.0', 'extra'] },
+    { name: 'repeated --release-tag', argv: ['--release-tag', 'v0.9.0', '--release-tag', 'v0.9.0'] },
+    { name: 'repeated --release-tag with different values', argv: ['--release-tag', 'v0.9.0', '--release-tag', 'v0.8.5'] },
+    { name: 'help-style flag', argv: ['--help'] },
+];
+
+for (const { name, argv } of STRICT_ARG_REJECTIONS) {
+    test(`parseArgs rejects ${name}: ${JSON.stringify(argv)}`, () => {
+        const parsed = parseArgs(argv);
+        assert.equal(parsed.ok, false, `expected ok:false for ${JSON.stringify(argv)}`);
+        assert.ok(typeof parsed.error === 'string' && parsed.error.length > 0, 'expected a non-empty error message');
+    });
+
+    test(`CLI: node tools/validate.mjs rejects ${name} instead of silently running PR/push mode`, () => {
+        const result = run('tools/validate.mjs', argv);
+        assert.notEqual(result.status, 0, `expected non-zero exit for ${JSON.stringify(argv)}`);
+        const output = result.stdout + result.stderr;
+        assert.doesNotMatch(output, /Mode: PR\/push/, 'must not fall back to PR/push mode');
+        assert.doesNotMatch(output, /All checks passed/);
+        assert.match(output, /FAIL \[args\]/);
+    });
+}
+
+test('CLI: the two accepted argument shapes still work', () => {
+    const noArgs = run('tools/validate.mjs');
+    assert.equal(noArgs.status, 0, noArgs.stdout + noArgs.stderr);
+    assert.match(noArgs.stdout, /Mode: PR\/push/);
+
+    const releaseMode = run('tools/validate.mjs', ['--release-tag', 'v0.9.0']);
+    assert.equal(releaseMode.status, 0, releaseMode.stdout + releaseMode.stderr);
+    assert.match(releaseMode.stdout, /Mode: release/);
 });
 
 test('CLI: node tools/run-tests.mjs discovers and passes exactly 3 files', () => {
