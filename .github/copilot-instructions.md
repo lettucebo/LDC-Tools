@@ -6,6 +6,64 @@ released together under **one synchronized version number** (see
 [Versioning](#versioning) below). Each script lives in its own
 `scripts/<script-id>/` folder.
 
+## Commands
+
+Run the same checks as CI before opening a PR:
+
+```powershell
+node tools\validate.mjs
+node --test "tools/test/*.test.mjs"
+node tools\run-tests.mjs
+```
+
+Targeted checks:
+
+```powershell
+# One release-tool test file
+node --test tools/test/validateCore.test.mjs
+
+# One named node:test pattern
+node --test --test-name-pattern="runReleaseModeCheck" tools/test/validateCore.test.mjs
+
+# One userscript's pure tests
+node scripts/ldc-batch-download/test/pure-modules.test.js
+
+# Syntax-check one userscript
+node --check scripts/ldc-batch-download/ldc-batch-download.user.js
+
+# Lint GitHub Actions workflows (requires actionlint on PATH)
+actionlint .github/workflows/ci.yml .github/workflows/release.yml
+```
+
+Release-only commands:
+
+```powershell
+node tools\validate.mjs --release-tag vX.Y.Z
+node tools\release-notes.mjs X.Y.Z
+node tools\verify-release.mjs --tag vX.Y.Z
+```
+
+`validate.mjs` accepts only no arguments or exactly
+`--release-tag vX.Y.Z`; malformed, misspelled, or extra arguments fail
+instead of falling back to the weaker PR/push validation mode.
+
+## Architecture
+
+- `scripts/<script-id>/` contains independent browser userscripts. There
+  is no shared runtime bundle: Tampermonkey installs each `.user.js`
+  directly from its GitHub raw `main` URL.
+- `tools/lib/` contains the reusable, testable, zero-third-party-dependency
+  release logic.
+  `tools/*.mjs` are thin CLIs for repository validation, test discovery,
+  release-note generation, and post-publication verification.
+- `.github/workflows/ci.yml` is the read-only PR/`main` gate.
+  `.github/workflows/release.yml` separates read-only validation from
+  the tag-push-only job that receives `contents: write` and publishes
+  the Release.
+- Script CHANGELOGs describe script behavior. The root `CHANGELOG.md`
+  describes repository-level tooling, CI, documentation, and skill
+  changes; `tools/release-notes.mjs` combines both layers.
+
 ## Tampermonkey userscript conventions
 
 When adding or modifying a userscript:
@@ -44,6 +102,11 @@ currently has** — bump up, never down. (Example: to synchronize a repo
 whose scripts were at `0.3.2`, `0.3.0` and `0.8.2`, everything moves to
 `0.8.3`, not down to the `0.3.x` line.)
 
+Once a version's `.user.js` content is public on `main`, treat it as
+frozen. Prepare a higher PATCH version for a fix; do not silently change
+or re-tag the existing version. Only publish when the user explicitly
+requests a release, and then follow `.github/skills/release/SKILL.md`.
+
 ## Release tag scheme
 
 Because all scripts share one synchronized version, each release is a
@@ -59,27 +122,40 @@ or reused, even after deletion, because other clones/forks may still
 hold the old annotated tag and a plain `git fetch --tags` will not
 overwrite an existing same-name tag — reusing it would make `v1.0.0`
 point to different commits for different people. `tools/validate.mjs`
-hard-excludes it from release-baseline selection via `RETIRED_TAGS`.
+both excludes it from release-baseline selection and rejects
+`--release-tag v1.0.0` outright.
 Future `1.x` releases must start at `1.0.1` or later, never `1.0.0`
 again.
 
 ## Release tooling, CI, and the release skill
 
-- `tools/` holds dependency-free Node.js scripts shared by local use and
-  CI: `tools/validate.mjs` (metadata/version/CHANGELOG validation, plus
-  PR/push-mode and `--release-tag`-gated release-mode non-downgrade
-  checks), `tools/run-tests.mjs` (discovers and runs every
-  `scripts/*/test/*.test.js`), and `tools/release-notes.mjs` (builds
-  combined release notes from the root and per-script CHANGELOGs).
+- `tools/validate.mjs` validates file completeness, userscript syntax
+  and metadata, synchronized versions, CHANGELOG structure, and
+  non-downgrade release history.
+- `tools/run-tests.mjs` discovers every
+  `scripts/*/test/*.test.js` and runs each with plain Node; discovering
+  zero tests is an error.
+  Userscript tests are plain Node scripts, while release-tool tests use
+  the built-in `node:test` runner under `tools/test/`. Userscript tests
+  hand-port pure logic because `.user.js` files depend on browser and
+  Tampermonkey globals; keep the copied logic and production script in
+  sync when changing parsers, regexes, or transformations.
+- `tools/release-notes.mjs` builds notes from the root and per-script
+  CHANGELOGs. `tools/verify-release.mjs` verifies an already-published
+  Release's tag, draft/prerelease state, and Latest marker.
 - `.github/workflows/ci.yml` (workflow `CI`) runs validation and tests
-  on every pull request and on `push` to `main`.
+  on every pull request, on `push` to `main`, and on manual dispatch.
   `.github/workflows/release.yml` (workflow `Release`) runs on `v*.*.*`
-  tag pushes, re-validates in release mode, and publishes the GitHub
-  Release via `gh release create --verify-tag`.
+  tag pushes and also supports a read-only `workflow_dispatch` dry run.
+  Manual dispatch runs only the `contents: read` validation job, without
+  `GH_TOKEN`; only a tag push creates the write-enabled publishing job.
+  A tag push re-validates in release mode, publishes via
+  `gh release create --latest --verify-tag`, and then calls
+  `tools/verify-release.mjs`.
 - `.github/skills/release/SKILL.md` is the step-by-step release
-  procedure for an assistant to follow, including the ordering rules
-  above and failure recovery; see `RELEASING.md` for the full narrative
-  reference.
+  procedure. Follow it rather than reconstructing tag, CI identity,
+  recovery, or legacy-deletion ordering from memory; use
+  `RELEASING.md` as the narrative reference.
 
 ## Folder layout per script
 
@@ -95,20 +171,6 @@ scripts/<script-id>/
 The root `README.md` / `README.zh-TW.md` is an index of all userscripts
 in the repo and should be kept up to date when a new script is added or
 removed.
-
-## Repo root layout
-
-```
-.github/
-├── copilot-instructions.md
-├── skills/<skill-id>/SKILL.md   ← includes skills/release/SKILL.md
-└── workflows/                   ← ci.yml, release.yml
-tools/                           ← validate.mjs, run-tests.mjs, release-notes.mjs, lib/
-scripts/<script-id>/             ← one folder per userscript, see below
-CHANGELOG.md                     ← repo-level (CI/tooling/docs/skills) changes
-README.md / README.zh-TW.md      ← index of all userscripts
-RELEASING.md                     ← full release procedure reference
-```
 
 ## Other conventions
 
